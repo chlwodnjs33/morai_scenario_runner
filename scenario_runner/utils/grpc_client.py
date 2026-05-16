@@ -101,21 +101,62 @@ class MoraiGrpcClient:
         print(f"[Ego] set_transform: {ok}")
         return ok
 
-    def set_ego_route(self, route_links, decision_range=30.0):
+    def set_ego_route(self, route_links, decision_range=30.0, waypoint_indices=None):
+        if waypoint_indices is not None:
+            return self.set_ego_route_with_waypoints(
+                route_links,
+                waypoint_indices,
+                decision_range=decision_range,
+            )
+
         ego = self.get_ego()
         ok = ego.set_vehicle_route(decision_range, route_links)
         print(f"[Ego] set_vehicle_route: {ok}, links={route_links}")
         return ok
 
-    def set_ego_cruise(self, enable=True, link_speed_ratio=40, constant_velocity=20):
+    def set_ego_route_with_waypoints(self, route_links, waypoint_indices, decision_range=30.0):
+        from proto.morai.actor.actor_set_pb2 import VehicleRoute
+        from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
+        from proto.morai.map.link_info_pb2 import LinkInfo
+
+        if len(route_links) != len(waypoint_indices):
+            raise ValueError("route_links and waypoint_indices length mismatch")
+
+        ego = self.get_ego()
+
+        param = VehicleRoute()
+        param.actor_info.CopyFrom(ego.get_object_info())
+        param.decision_range = float(decision_range)
+
+        for link_id, waypoint_idx in zip(route_links, waypoint_indices):
+            link_info = LinkInfo()
+            link_info.id.value = link_id
+            link_info.waypoint_idx = int(waypoint_idx)
+            param.links.append(link_info)
+
+        ok = ego._sim_adapter.set_vehicle_route(param).status == STATUS_CODE_SUCCESS
+        print(
+            f"[Ego] set_vehicle_route_with_waypoints: {ok}, "
+            f"links={list(zip(route_links, waypoint_indices))}"
+        )
+        return ok
+
+    def set_ego_cruise(self, enable=True, link_speed_ratio=40, constant_velocity=20, cruise_type="link"):
+        from proto.morai.actor.actor_enum_pb2 import EGO_CRUISE_TYPE_CONSTANT, EGO_CRUISE_TYPE_LINK
+
+        cruise_type_value = EGO_CRUISE_TYPE_CONSTANT if str(cruise_type).lower() == "constant" else EGO_CRUISE_TYPE_LINK
         ego = self.get_ego()
         ok = ego.set_cruise_mode(
             enable=enable,
+            cruise_type=cruise_type_value,
             link_speed_ratio=link_speed_ratio,
             constant_velocity=constant_velocity,
         )
         print(f"[Ego] set_cruise_mode: {ok}")
         return ok
+
+    def stop_ego_cruise(self):
+        return self.set_ego_cruise(enable=False, link_speed_ratio=0, constant_velocity=0)
 
     def set_ego_control_mode_cruise(self):
         from proto.morai.actor.actor_enum_pb2 import VehicleControlMode
@@ -135,6 +176,92 @@ class MoraiGrpcClient:
         )
         print(f"[Spawn] vehicle {label}: {vehicle is not None}")
         return vehicle
+
+    def get_available_surround_vehicle_models(self):
+        try:
+            objects = self.client._sim_adapter.get_available_objects()
+        except Exception as e:
+            print(f"[MORAI] get_available_surround_vehicle_models failed: {e}")
+            return []
+
+        if objects is None:
+            return []
+
+        return list(objects.surround_vehicle)
+
+    def set_vehicle_speed(self, vehicle, speed):
+        from proto.morai.actor.actor_enum_pb2 import LONG_CMD_TYPE_SPEED
+
+        if vehicle is None:
+            return False
+
+        ok_velocity = vehicle.set_velocity(float(speed))
+        ok_control = vehicle.control(
+            long_cmd_type=LONG_CMD_TYPE_SPEED,
+            throttle=0.0,
+            brake=1.0 if float(speed) <= 0.0 else 0.0,
+            steer=0.0,
+            velocity=float(speed),
+            acceleration=0.0,
+            frame=0,
+        )
+        ok = bool(ok_velocity or ok_control)
+        print(f"[Vehicle] set_speed {speed}: {ok} (velocity={ok_velocity}, control={ok_control})")
+        return ok
+
+    def set_vehicle_velocity(self, vehicle, velocity):
+        if vehicle is None:
+            return False
+
+        ok = vehicle.set_velocity(float(velocity))
+        print(f"[Vehicle] set_velocity {velocity}: {ok}")
+        return ok
+
+    def set_vehicle_speed_limit(self, vehicle, speed_limit, enabled=True):
+        if vehicle is None or not hasattr(vehicle, "set_vehicle_dynamics_speed_limit"):
+            return False
+
+        ok = vehicle.set_vehicle_dynamics_speed_limit(
+            bool(enabled),
+            float(speed_limit),
+            reset=not bool(enabled),
+        )
+        print(f"[Vehicle] set_speed_limit {speed_limit}, enabled={enabled}: {ok}")
+        return ok
+
+    def set_vehicle_physics(self, vehicle, enabled):
+        if vehicle is None or not hasattr(vehicle, "set_physics"):
+            return False
+
+        ok = vehicle.set_physics(bool(enabled))
+        print(f"[Vehicle] set_physics {enabled}: {ok}")
+        return ok
+
+    def set_vehicle_ai(self, vehicle, enabled):
+        if vehicle is None or not hasattr(vehicle, "set_ai"):
+            return False
+
+        ok = vehicle.set_ai(bool(enabled))
+        print(f"[Vehicle] set_ai {enabled}: {ok}")
+        return ok
+
+    def stop_vehicle(self, vehicle):
+        if vehicle is None:
+            return False
+
+        pause_ok = vehicle.set_pause(True)
+        velocity_ok = vehicle.set_velocity(0.0)
+        print(f"[Vehicle] stop: {bool(pause_ok or velocity_ok)} (pause={pause_ok}, velocity={velocity_ok})")
+        return bool(pause_ok or velocity_ok)
+
+    def resume_vehicle_ai(self, vehicle):
+        if vehicle is None:
+            return False
+
+        pause_ok = vehicle.set_pause(False)
+        ai_ok = self.set_vehicle_ai(vehicle, True)
+        print(f"[Vehicle] resume_ai: {bool(pause_ok or ai_ok)} (pause={pause_ok}, ai={ai_ok})")
+        return bool(pause_ok or ai_ok)
 
     def stop(self):
         if self.client is not None:

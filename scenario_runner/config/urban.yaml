@@ -3,22 +3,86 @@ scenarios:
   basic_drive:
     start_link: A219BS010404
     end_link: A219BS010469
+    randomize_links: true
+    zone_links_path: scenario_runner/config/urban_links.yaml
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_attempts: 300
+    random_min_route_length_m: 40.0
+    random_max_route_length_m: 0.0
+    random_max_route_links: 2
+    route_setup_attempts: 5
     ego_spawn_offset_m: 5.0
-    decision_range_m: 40.0
+    goal_offset_from_end_m: 3.0
+    use_ego_destination: false
+    use_route_waypoints: false
+    decision_range_m: 10.0
     run_duration_sec: 8.0
     timeout_sec: 0.0
     goal_tolerance_m: 4.0
+    restart_on_morai_route_complete: true
+    route_complete_goal_tolerance_m: 15.0
+    complete_on_end_link: true
+    end_link_hold_sec: 0.5
+    off_route_timeout_sec: 3.0
+    off_route_grace_sec: 2.0
     check_period_sec: 0.2
-    max_laps: 3
+    max_laps: 0
     link_speed_ratio: 40
     constant_velocity: 20
   sudden_brake:
     start_link: A219BS010404
     end_link: A219BS010090
-    ego_spawn_offset_m: 5.0
-    lead_vehicle_offset_m: 25.0
-    lead_vehicle_model: 2014_Kia_K7
-    lead_vehicle_speed_kph: 25.0
-    brake_after_sec: 5.0
-    brake_duration_sec: 5.0
+    randomize_links: true
+    zone_links_path: scenario_runner/config/urban_links.yaml
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_attempts: 300
+    random_min_route_length_m: 60.0
+    random_max_route_links: 3
+    prefer_stable_brake_links: true
+    stable_link_min_length_m: 35.0
+    stable_link_max_heading_change_deg: 25.0
+    ego_spawn_offset_m: 20.0
+    ego_spawn_min_offset_m: 15.0
+    ego_spawn_max_offset_m: 35.0
+    goal_offset_from_end_m: 3.0
+    npc_count_min: 1
+    npc_count_max: 1
+    npc_vehicle_models:
+      - 2014_Kia_K7
+      - 2020_Hyundai_Ioniq
+      - 2017_Hyundai_Grandeur
+      - 2016_Hyundai_Sonata
+    npc_min_offset_m: 7.0
+    npc_max_offset_m: 10.0
+    npc_min_spacing_m: 8.0
+    npc_speed_mps: 35.0
+    npc_speed_jitter_mps: 2.0
+    npc_speed_limit: 35.0
+    lead_control_mode: scripted
+    lead_follow_gap_m: 9.0
+    lead_script_speed_mps: 5.0
+    lead_script_catchup_ratio: 1.05
+    background_npc_speed_min_mps: 1.5
+    background_npc_speed_max_mps: 2.5
+    background_npc_min_spawn_gap_m: 30.0
+    background_npc_stable_links_only: true
+    lead_warmup_sec: 0.0
+    min_follow_before_brake_sec: 3.0
+    brake_after_min_sec: 3.0
+    brake_after_max_sec: 5.0
+    brake_trigger_gap_m: 18.0
+    brake_min_target_speed_mps: 0.5
+    brake_min_ego_speed_mps: 1.0
+    brake_min_speed_hold_sec: 0.3
+    brake_trigger_timeout_sec: 0.0
+    brake_stop_sec: 4.0
+    after_resume_sec: 10.0
+    print_period_sec: 1.0
     decision_range_m: 30.0
+    use_ego_destination: false
+    check_period_sec: 0.05
+    cruise_type: constant
+    link_speed_ratio: 100
+    constant_velocity: 60

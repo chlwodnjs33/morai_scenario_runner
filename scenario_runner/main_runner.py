@@ -3,7 +3,7 @@ import yaml
 
 from utils.grpc_client import MoraiGrpcClient
 from utils.map_loader import MGeoMapLoader
-from zones.urban_scenarios import UrbanBasicDriveScenario
+from zones.urban_scenarios import UrbanBasicDriveScenario, UrbanSuddenBrakeScenario
 
 
 def load_yaml(path):
@@ -41,6 +41,13 @@ def main():
 
     if args.zone == "urban" and args.scenario == "basic_drive":
         scenario = UrbanBasicDriveScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.zone == "urban" and args.scenario == "sudden_brake":
+        scenario = UrbanSuddenBrakeScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
             global_cfg=global_cfg,

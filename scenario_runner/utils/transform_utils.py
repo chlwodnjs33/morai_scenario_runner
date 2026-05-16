@@ -17,6 +17,60 @@ def distance_2d(p1: Sequence[float], p2: Sequence[float]) -> float:
     return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
 
+def polyline_length(points: List[Sequence[float]]) -> float:
+    total = 0.0
+    for p0, p1 in zip(points[:-1], points[1:]):
+        total += distance_2d(p0, p1)
+    return total
+
+
+def nearest_point_index(points: List[Sequence[float]], x: float, y: float) -> int:
+    if len(points) == 0:
+        raise ValueError("Empty points")
+
+    best_idx = 0
+    best_dist = float("inf")
+    target = (x, y)
+    for i, point in enumerate(points):
+        d = distance_2d(point, target)
+        if d < best_dist:
+            best_idx = i
+            best_dist = d
+    return best_idx
+
+
+def project_distance_on_polyline(points: List[Sequence[float]], x: float, y: float) -> float:
+    if len(points) < 2:
+        raise ValueError("Polyline must have at least 2 points")
+
+    best_s = 0.0
+    best_dist = float("inf")
+    cumulative = 0.0
+
+    for p0, p1 in zip(points[:-1], points[1:]):
+        dx = p1[0] - p0[0]
+        dy = p1[1] - p0[1]
+        seg_len_sq = dx * dx + dy * dy
+
+        if seg_len_sq < 1e-9:
+            continue
+
+        t = ((x - p0[0]) * dx + (y - p0[1]) * dy) / seg_len_sq
+        t = max(0.0, min(1.0, t))
+        proj_x = p0[0] + t * dx
+        proj_y = p0[1] + t * dy
+        d = distance_2d((x, y), (proj_x, proj_y))
+        seg_len = math.sqrt(seg_len_sq)
+
+        if d < best_dist:
+            best_dist = d
+            best_s = cumulative + t * seg_len
+
+        cumulative += seg_len
+
+    return best_s
+
+
 def interpolate_on_polyline(
     points: List[Sequence[float]],
     offset_m: float,
