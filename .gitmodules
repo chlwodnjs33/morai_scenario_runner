@@ -1,3 +1,6 @@
 [submodule "third_party/grpc_inha_univ"]
 	path = third_party/grpc_inha_univ
 	url = https://github.com/chlwodnjs33/grpc_inha_univ.git
+[submodule "third_party/GT_BEV"]
+	path = third_party/GT_BEV
+	url = https://github.com/chlwodnjs33/GT_BEV.git
