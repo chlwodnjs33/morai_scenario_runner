@@ -15,6 +15,7 @@ class MoraiGrpcClient:
         self.grpc_src = path_cfg["grpc_src"]
 
         self._add_grpc_paths()
+        self._disable_third_party_mgeo_fetch()
 
         from api.morai_sim_client import MoraiSimClient
 
@@ -28,6 +29,27 @@ class MoraiGrpcClient:
         for p in [self.grpc_src, api_path, proto_path]:
             if p not in sys.path:
                 sys.path.append(p)
+
+    def _disable_third_party_mgeo_fetch(self):
+        """
+        third_party SimulationWorld는 생성 시 MORAI 서버의 GetMGeo를 호출한다.
+        우리는 local mgeo_root의 JSON을 직접 쓰므로 서버 MGeo 다운로드를 생략한다.
+        """
+        try:
+            from api.map import Map
+        except Exception as e:
+            print(f"[MORAI] skip disabling third_party MGeo fetch: {e}")
+            return
+
+        if getattr(Map, "_scenario_runner_mgeo_fetch_disabled", False):
+            return
+
+        def _skip_get_mgeo_data(self, map_name):
+            self.mgeo_data = {}
+            print(f"[MORAI] skip GetMGeo for {map_name}; using local MGeo JSON")
+
+        Map.get_mgeo_data = _skip_get_mgeo_data
+        Map._scenario_runner_mgeo_fetch_disabled = True
 
     def connect(self):
         self.client.connect(self.host, self.port)
@@ -101,44 +123,97 @@ class MoraiGrpcClient:
         print(f"[Ego] set_transform: {ok}")
         return ok
 
-    def set_ego_route(self, route_links, decision_range=30.0, waypoint_indices=None):
-        if waypoint_indices is not None:
-            return self.set_ego_route_with_waypoints(
-                route_links,
-                waypoint_indices,
-                decision_range=decision_range,
-            )
+    def set_ego_route(
+        self,
+        route_links,
+        decision_range=30.0,
+        route_waypoint_indices=None,
+        waypoint_indices=None,
+    ):
+        """
+        Ego vehicle route 설정.
 
-        ego = self.get_ego()
-        ok = ego.set_vehicle_route(decision_range, route_links)
-        print(f"[Ego] set_vehicle_route: {ok}, links={route_links}")
-        return ok
-
-    def set_ego_route_with_waypoints(self, route_links, waypoint_indices, decision_range=30.0):
+        grpc_inha_univ의 Vehicle.set_vehicle_route()는 protobuf 환경에 따라
+        param.links.append(...)에서 실패할 수 있어서 여기서 직접 add()로 구성한다.
+        """
         from proto.morai.actor.actor_set_pb2 import VehicleRoute
         from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
-        from proto.morai.map.link_info_pb2 import LinkInfo
-
-        if len(route_links) != len(waypoint_indices):
-            raise ValueError("route_links and waypoint_indices length mismatch")
 
         ego = self.get_ego()
+
+        if route_waypoint_indices is None:
+            route_waypoint_indices = waypoint_indices
+
+        if route_waypoint_indices is None:
+            route_waypoint_indices = {}
 
         param = VehicleRoute()
         param.actor_info.CopyFrom(ego.get_object_info())
         param.decision_range = float(decision_range)
 
-        for link_id, waypoint_idx in zip(route_links, waypoint_indices):
-            link_info = LinkInfo()
-            link_info.id.value = link_id
-            link_info.waypoint_idx = int(waypoint_idx)
-            param.links.append(link_info)
+        for i, link_id in enumerate(route_links):
+            link_info = param.links.add()
+            link_info.id.value = str(link_id)
 
-        ok = ego._sim_adapter.set_vehicle_route(param).status == STATUS_CODE_SUCCESS
-        print(
-            f"[Ego] set_vehicle_route_with_waypoints: {ok}, "
-            f"links={list(zip(route_links, waypoint_indices))}"
-        )
+            if isinstance(route_waypoint_indices, dict):
+                link_info.waypoint_idx = int(route_waypoint_indices.get(link_id, 0))
+            elif isinstance(route_waypoint_indices, (list, tuple)) and i < len(route_waypoint_indices):
+                link_info.waypoint_idx = int(route_waypoint_indices[i])
+            else:
+                link_info.waypoint_idx = 0
+
+        result = ego._sim_adapter.set_vehicle_route(param)
+        ok = result is not None and result.status == STATUS_CODE_SUCCESS
+
+        print(f"[Ego] set_vehicle_route: {ok}, links={list(route_links)}")
+        return ok
+
+    def set_vehicle_route(
+        self,
+        vehicle,
+        route_links,
+        decision_range=30.0,
+        route_waypoint_indices=None,
+        waypoint_indices=None,
+        label="Vehicle",
+    ):
+        """
+        일반 vehicle route 설정.
+
+        third_party Vehicle.set_vehicle_route()가 protobuf append() 문제로 실패할 수 있어
+        Ego와 동일하게 add()로 직접 구성한다.
+        """
+        from proto.morai.actor.actor_set_pb2 import VehicleRoute
+        from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
+
+        if vehicle is None:
+            return False
+
+        if route_waypoint_indices is None:
+            route_waypoint_indices = waypoint_indices
+
+        if route_waypoint_indices is None:
+            route_waypoint_indices = {}
+
+        param = VehicleRoute()
+        param.actor_info.CopyFrom(vehicle.get_object_info())
+        param.decision_range = float(decision_range)
+
+        for i, link_id in enumerate(route_links):
+            link_info = param.links.add()
+            link_info.id.value = str(link_id)
+
+            if isinstance(route_waypoint_indices, dict):
+                link_info.waypoint_idx = int(route_waypoint_indices.get(link_id, 0))
+            elif isinstance(route_waypoint_indices, (list, tuple)) and i < len(route_waypoint_indices):
+                link_info.waypoint_idx = int(route_waypoint_indices[i])
+            else:
+                link_info.waypoint_idx = 0
+
+        result = vehicle._sim_adapter.set_vehicle_route(param)
+        ok = result is not None and result.status == STATUS_CODE_SUCCESS
+
+        print(f"[{label}] set_vehicle_route: {ok}, links={list(route_links)}")
         return ok
 
     def set_ego_cruise(self, enable=True, link_speed_ratio=40, constant_velocity=20, cruise_type="link"):
@@ -159,11 +234,71 @@ class MoraiGrpcClient:
         return self.set_ego_cruise(enable=False, link_speed_ratio=0, constant_velocity=0)
 
     def set_ego_control_mode_cruise(self):
-        from proto.morai.actor.actor_enum_pb2 import VehicleControlMode
+        """
+        Ego control mode를 MORAI built-in cruise mode로 설정.
+        protobuf 환경에 따라 VehicleControlMode.VEHICLE_CONTROL_CRUISE_MODE 접근이
+        실패할 수 있어서 모듈 최상위 상수를 직접 사용한다.
+        """
+        from proto.morai.actor.actor_set_pb2 import VehicleControlModeParam
+        from proto.morai.actor.actor_enum_pb2 import VEHICLE_CONTROL_CRUISE_MODE
+        from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
 
         ego = self.get_ego()
-        ok = ego.set_control_mode(VehicleControlMode.VEHICLE_CONTROL_CRUISE_MODE)
+
+        param = VehicleControlModeParam()
+        param.actor_info.CopyFrom(ego.get_object_info())
+        param.mode = VEHICLE_CONTROL_CRUISE_MODE
+
+        result = ego._sim_adapter.set_vehicle_control_mode(param)
+        ok = result is not None and result.status == STATUS_CODE_SUCCESS
+
         print(f"[Ego] set_control_mode CRUISE: {ok}")
+        return ok
+
+    def set_ego_control_mode_auto(self):
+        """
+        Ego control mode를 외부 알고리즘 제어 모드로 설정.
+        """
+        from proto.morai.actor.actor_set_pb2 import VehicleControlModeParam
+        from proto.morai.actor.actor_enum_pb2 import VEHICLE_CONTROL_AUTO_MODE
+        from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
+
+        ego = self.get_ego()
+
+        param = VehicleControlModeParam()
+        param.actor_info.CopyFrom(ego.get_object_info())
+        param.mode = VEHICLE_CONTROL_AUTO_MODE
+
+        result = ego._sim_adapter.set_vehicle_control_mode(param)
+        ok = result is not None and result.status == STATUS_CODE_SUCCESS
+
+        print(f"[Ego] set_control_mode AUTO: {ok}")
+        return ok
+
+    def control_ego(self, steer, target_speed, brake=0.0, throttle=0.0):
+        from proto.morai.actor.actor_enum_pb2 import LONG_CMD_TYPE_SPEED
+
+        ego = self.get_ego()
+        ok = ego.control(
+            long_cmd_type=LONG_CMD_TYPE_SPEED,
+            throttle=float(throttle),
+            brake=float(brake),
+            steer=float(steer),
+            velocity=float(target_speed),
+            acceleration=0.0,
+            frame=0,
+        )
+        return ok
+
+    def stop_ego_control(self):
+        return self.control_ego(steer=0.0, target_speed=0.0, brake=1.0, throttle=0.0)
+
+    def set_ego_gear_drive(self):
+        from proto.morai.actor.actor_enum_pb2 import GEAR_MODE_D
+
+        ego = self.get_ego()
+        ok = ego.set_vehicle_gear(GEAR_MODE_D)
+        print(f"[Ego] set_gear D: {ok}")
         return ok
 
     def spawn_vehicle(self, transform, model_name, label, velocity=0.0, multi_ego=True):
@@ -333,6 +468,32 @@ def _morai_get_ego_state_debug(self):
 
 MoraiGrpcClient.set_ego_destination = _morai_set_ego_destination
 MoraiGrpcClient.get_ego_state_debug = _morai_get_ego_state_debug
+
+
+def _morai_get_ego_motion_state(self):
+    ego = self.get_ego()
+    state = ego.get_actor_state()
+    if state is None:
+        raise RuntimeError("Failed to get ego actor state")
+
+    vx = float(state.velocity.x)
+    vy = float(state.velocity.y)
+    vz = float(state.velocity.z)
+    speed = (vx * vx + vy * vy + vz * vz) ** 0.5
+    vehicle_state = state.vehicle_state
+
+    return {
+        "x": float(state.transform.location.x),
+        "y": float(state.transform.location.y),
+        "z": float(state.transform.location.z),
+        "yaw_deg": float(state.transform.rotation.z),
+        "speed": speed,
+        "current_link": vehicle_state.current_link_info.id.value,
+        "front_wheel_angle": float(vehicle_state.front_wheel_angle),
+    }
+
+
+MoraiGrpcClient.get_ego_motion_state = _morai_get_ego_motion_state
 
 
 def _morai_restart_world(self, ego_transform):

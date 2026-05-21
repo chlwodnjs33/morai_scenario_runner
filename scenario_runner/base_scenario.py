@@ -19,5 +19,7 @@ class BaseScenario:
 
     def run(self):
         self.setup()
-        self.run_timeline()
-        self.cleanup()
+        try:
+            self.run_timeline()
+        finally:
+            self.cleanup()

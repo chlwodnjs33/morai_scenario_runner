@@ -16,3 +16,6 @@ outputs/
 .DS_Store
 .vscode/
 .idea/
+
+scenario_runner/config/local.yaml
+scenario_runner/debug_routes/
