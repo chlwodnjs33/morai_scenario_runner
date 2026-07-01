@@ -16,7 +16,11 @@ class Config(object):
         if not isinstance(cls._instance, cls):
             cls._instance = object.__new__(cls)
 
-            with io.open(os.path.join(os.path.dirname(__file__), 'config.json'), 'r', encoding='utf-8') as f:
+            config_path = os.environ.get(
+                'GT_BEV_CONFIG_PATH',
+                os.path.join(os.path.dirname(__file__), 'config.json'),
+            )
+            with io.open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 cls._instance.__dict__ = config
 
@@ -27,9 +31,11 @@ class Config(object):
         return getattr(self, key)
 
     def _set_map_data(self):
-        path = pd.read_csv(
+        path_csv = os.environ.get(
+            'GT_BEV_PATH_CSV',
             os.path.join(os.path.dirname(__file__), 'map', self["map"]["name"], 'path.csv')
         )
+        path = pd.read_csv(path_csv)
         self["map"]["path"] = path.apply(
             lambda point: Point(point["x"], point["y"]), axis=1
         ).tolist()

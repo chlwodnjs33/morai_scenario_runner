@@ -68,6 +68,15 @@ def load_path_txt(filepath):
 
 
 def find_latest_path_file():
+    env_path = os.environ.get('SCENARIO_ROUTE_PATH_TXT')
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    gt_bev_root = os.path.normpath(os.path.join(current_path, '../../../..'))
+    runtime_path = os.path.join(gt_bev_root, '.runtime', 'scenario_runner', 'path_scenario_runner_current.txt')
+    if os.path.exists(runtime_path):
+        return runtime_path
+
     preferred = os.path.join(current_path, 'path_scenario_runner_current.txt')
     if os.path.exists(preferred):
         return preferred
