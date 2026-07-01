@@ -2169,12 +2169,25 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
         forward_x = math.cos(yaw_rad)
         forward_y = math.sin(yaw_rad)
         front_only = bool(self.cfg.get("npc_brake_front_only", True))
+        same_direction_only = bool(self.cfg.get("npc_brake_same_direction_only", True))
+        heading_min_cos = float(self.cfg.get("npc_brake_heading_min_cos", 0.5))
 
         closest = None
         for npc_info in self.npc_vehicles:
+            if now < float(npc_info.get("next_state_check_time", 0.0)):
+                continue
+
             actor = npc_info["actor"]
-            state = actor.get_actor_state()
+            try:
+                state = actor.get_actor_state()
+            except Exception as e:
+                state = None
+                npc_info["state_error_count"] = int(npc_info.get("state_error_count", 0)) + 1
+                npc_info["next_state_check_time"] = now + float(self.cfg.get("npc_state_retry_sec", 1.0))
+                if npc_info["state_error_count"] <= 3:
+                    print(f"[UrbanSuddenBrake] skip npc state {npc_info['label']}: {e}")
             if state is None:
+                npc_info["next_state_check_time"] = now + float(self.cfg.get("npc_state_retry_sec", 1.0))
                 continue
 
             npc_x = float(state.transform.location.x)
@@ -2184,6 +2197,8 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
             distance_m = math.hypot(dx, dy)
             ahead_m = dx * forward_x + dy * forward_y
             lateral_m = abs(-dx * forward_y + dy * forward_x)
+            npc_yaw_rad = math.radians(float(state.transform.rotation.z))
+            heading_cos = math.cos(npc_yaw_rad - yaw_rad)
 
             last_x, last_y = npc_info["last_xy"]
             dt = max(1e-6, now - npc_info["last_time"])
@@ -2197,10 +2212,14 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
                     "distance_m": distance_m,
                     "ahead_m": ahead_m,
                     "lateral_m": lateral_m,
+                    "heading_cos": heading_cos,
+                    "next_state_check_time": 0.0,
                 }
             )
 
             if front_only and ahead_m < 0.0:
+                continue
+            if same_direction_only and heading_cos < heading_min_cos:
                 continue
             if closest is None or distance_m < closest["distance_m"]:
                 closest = npc_info
@@ -2260,6 +2279,7 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
                     f"dist={target.get('distance_m', -1.0):.1f}m, "
                     f"ahead={target.get('ahead_m', 0.0):.1f}m, "
                     f"lat={target.get('lateral_m', 0.0):.1f}m, "
+                    f"heading_cos={target.get('heading_cos', 0.0):.2f}, "
                     f"npc_speed={target.get('speed_mps', 0.0):.1f}m/s, "
                     f"ego_speed={ego_speed_mps:.1f}m/s, "
                     f"reason={'timeout' if timeout_ok and not gap_ok else 'near'}, "
@@ -2362,6 +2382,7 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
                     front_msg = (
                         f"{target['label']} dist={target.get('distance_m', -1.0):.1f}m "
                         f"ahead={target.get('ahead_m', 0.0):.1f}m "
+                        f"heading_cos={target.get('heading_cos', 0.0):.2f} "
                         f"speed={target.get('speed_mps', 0.0):.1f}m/s"
                     )
                 print(
@@ -2412,6 +2433,663 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
             if use_timeout and elapsed >= float(timeout_sec):
                 print(
                     f"[UrbanSuddenBrake] TIMEOUT lap={lap + 1}, "
+                    f"dist={dist_to_goal:.2f}m, elapsed={elapsed:.1f}s"
+                )
+                self.stop_pure_pursuit_control()
+                break
+
+            time.sleep(check_period_sec)
+
+
+class UrbanTrafficJamScenario(UrbanSuddenBrakeExpertScenario):
+    zone_name = "urban"
+    scenario_name = "traffic_jam"
+
+    def reset_brake_event_state(self):
+        self.brake_event = {
+            "phase": "stopped",
+            "cycles_completed": 0,
+            "phase_started_at": time.time(),
+            "last_transition": "initial_jam",
+        }
+
+    def spawn_npc_vehicles(self):
+        self.jam_npcs = []
+        self.npc_vehicles = []
+
+        queue_count = self.random.randint(
+            int(self.cfg.get("jam_queue_count_min", 3)),
+            int(self.cfg.get("jam_queue_count_max", 5)),
+        )
+        background_count = self.random.randint(
+            int(self.cfg.get("jam_background_npc_min", 0)),
+            int(self.cfg.get("jam_background_npc_max", 0)),
+        )
+
+        print(
+            f"[UrbanTrafficJam] spawning jam_queue={queue_count}, "
+            f"background={background_count}"
+        )
+        self.spawn_jam_queue(queue_count)
+
+        for i in range(background_count):
+            if not self.spawn_random_ai_npc(label=f"npc_jam_bg_{i}"):
+                print(f"[UrbanTrafficJam] npc_jam_bg_{i} spawn skipped")
+
+    def spawn_jam_queue(self, count):
+        base_speed = float(self.cfg.get("npc_speed_mps", 7.0))
+        speed_jitter = float(self.cfg.get("npc_speed_jitter_mps", 0.0))
+        start_gap = float(self.cfg.get("jam_queue_start_gap_m", 20.0))
+        spacing = float(self.cfg.get("jam_queue_spacing_m", 7.0))
+
+        for i in range(count):
+            spawn_s = min(
+                float(self.ego_spawn_offset_m) + start_gap + i * spacing,
+                max(float(self.ego_spawn_offset_m) + 8.0, self.route_length_m - 8.0),
+            )
+            x, y, z, yaw = interpolate_on_polyline(self.route_points, spawn_s)
+            speed = max(0.5, base_speed + self.random.uniform(-speed_jitter, speed_jitter))
+            label = f"npc_jam_queue_{i}"
+            npc, model = self.spawn_vehicle_with_model_retry(
+                self.grpc.make_transform(x, y, z, yaw),
+                label,
+                speed,
+            )
+            if npc is None:
+                print(f"[UrbanTrafficJam] {label} spawn failed")
+                continue
+
+            route_ok = False
+            if self.cfg.get("npc_use_route", False):
+                route_ok = self.grpc.set_vehicle_route(
+                    npc,
+                    self.route_links,
+                    decision_range=self.decision_range,
+                    label=label,
+                )
+
+            self.configure_ai_npc(npc, speed)
+            self.grpc.stop_vehicle(npc)
+            self.register_npc(npc, label, model, x, y, speed, route_ok=route_ok)
+            npc_info = self.npc_vehicles[-1]
+            npc_info["jam_queue"] = True
+            self.jam_npcs.append(npc_info)
+            print(
+                f"[UrbanTrafficJam] jam npc stopped label={label}, model={model}, "
+                f"spawn_s={spawn_s:.1f}m, route={route_ok}"
+            )
+
+    def pause_jam_npcs(self):
+        for npc_info in getattr(self, "jam_npcs", []):
+            self.grpc.stop_vehicle(npc_info["actor"])
+        print(f"[UrbanTrafficJam] jam STOP vehicles={len(getattr(self, 'jam_npcs', []))}")
+
+    def resume_jam_npcs(self):
+        for npc_info in getattr(self, "jam_npcs", []):
+            self.grpc.resume_vehicle_ai(npc_info["actor"])
+            npc_info["next_state_check_time"] = time.time() + 0.5
+        print(f"[UrbanTrafficJam] jam GO vehicles={len(getattr(self, 'jam_npcs', []))}")
+
+    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg):
+        if self.brake_event.get("phase") != "stopped":
+            return super().update_npc_states(ego_x, ego_y, ego_yaw_deg)
+
+        yaw_rad = math.radians(ego_yaw_deg)
+        forward_x = math.cos(yaw_rad)
+        forward_y = math.sin(yaw_rad)
+        closest = None
+
+        for npc_info in getattr(self, "jam_npcs", []):
+            npc_x, npc_y = npc_info["last_xy"]
+            dx = npc_x - ego_x
+            dy = npc_y - ego_y
+            distance_m = math.hypot(dx, dy)
+            ahead_m = dx * forward_x + dy * forward_y
+            lateral_m = abs(-dx * forward_y + dy * forward_x)
+            npc_info.update(
+                {
+                    "distance_m": distance_m,
+                    "ahead_m": ahead_m,
+                    "lateral_m": lateral_m,
+                    "speed_mps": 0.0,
+                    "heading_cos": 1.0,
+                }
+            )
+
+            if ahead_m < 0.0:
+                continue
+            if closest is None or distance_m < closest["distance_m"]:
+                closest = npc_info
+
+        return closest
+
+    def maybe_update_brake_event(self, elapsed, ego_speed_mps, target):
+        now = time.time()
+        phase = self.brake_event.get("phase", "stopped")
+        phase_duration = now - float(self.brake_event.get("phase_started_at", now))
+        cycles_completed = int(self.brake_event.get("cycles_completed", 0))
+        max_cycles = int(self.cfg.get("jam_cycles_per_episode", 2))
+
+        if phase == "stopped":
+            release_gap = float(self.cfg.get("jam_release_gap_m", 18.0))
+            force_release_sec = float(self.cfg.get("jam_force_release_sec", 8.0))
+            stop_duration_sec = float(self.cfg.get("jam_stop_duration_sec", 3.5))
+            ego_close = (
+                target is not None
+                and target.get("distance_m", float("inf")) <= release_gap
+                and target.get("ahead_m", -float("inf")) >= 0.0
+            )
+            enough_wait = (
+                elapsed >= force_release_sec
+                if cycles_completed == 0
+                else phase_duration >= stop_duration_sec
+            )
+
+            if ego_close or enough_wait:
+                self.resume_jam_npcs()
+                self.brake_event.update(
+                    {
+                        "phase": "released",
+                        "cycles_completed": cycles_completed + 1,
+                        "phase_started_at": now,
+                        "last_transition": "go_close" if ego_close else "go_wait",
+                    }
+                )
+            return
+
+        if phase == "released":
+            go_duration_sec = float(self.cfg.get("jam_go_duration_sec", 6.0))
+            if cycles_completed < max_cycles and phase_duration >= go_duration_sec:
+                self.pause_jam_npcs()
+                self.brake_event.update(
+                    {
+                        "phase": "stopped",
+                        "phase_started_at": now,
+                        "last_transition": "stop_again",
+                    }
+                )
+
+
+class UrbanPedestrianYieldScenario(UrbanBasicDriveScenario):
+    zone_name = "urban"
+    scenario_name = "pedestrian_yield"
+
+    def build_random_route_pool(self):
+        pool = super().build_random_route_pool()
+        filtered = []
+        for item in pool:
+            route_points = self.build_route_points(item["route_links"])
+            crosswalk = self._find_route_crosswalk_spawn(
+                route_points=route_points,
+                route_length_m=item["route_length_m"],
+            )
+            if crosswalk is None:
+                continue
+            item = dict(item)
+            item["crosswalk_spawn"] = crosswalk
+            filtered.append(item)
+
+        if not filtered:
+            raise RuntimeError("No pedestrian_yield routes pass near singlecrosswalk_set.json crosswalks")
+
+        print(
+            f"[UrbanPedestrianYield] route pool with crosswalks: "
+            f"{len(filtered)}/{len(pool)}"
+        )
+        return filtered
+
+    def setup(self):
+        super().setup()
+        self._load_crosswalk_spawn_info()
+        self._reset_pedestrian_event()
+
+    def restart_to_start_and_drive(self):
+        self._despawn_pedestrian()
+        super().restart_to_start_and_drive()
+        self._load_crosswalk_spawn_info()
+        self._reset_pedestrian_event()
+
+    def _reset_pedestrian_event(self):
+        self.pedestrian = None
+        self.pedestrian_phase = "waiting"
+        self.pedestrian_started_at = None
+        self._pedestrian_speed = float(self.cfg.get("pedestrian_speed_mps", 1.2))
+        self._pedestrian_model = None
+
+    def _route_projection_for_points(self, route_points, x, y):
+        if len(route_points) < 2:
+            return 0.0, float("inf")
+
+        best_s = 0.0
+        best_dist = float("inf")
+        cumulative = 0.0
+        for p0, p1 in zip(route_points[:-1], route_points[1:]):
+            dx = p1[0] - p0[0]
+            dy = p1[1] - p0[1]
+            seg_len_sq = dx * dx + dy * dy
+            if seg_len_sq < 1e-9:
+                continue
+
+            seg_len = math.sqrt(seg_len_sq)
+            t = ((x - p0[0]) * dx + (y - p0[1]) * dy) / seg_len_sq
+            t = max(0.0, min(1.0, t))
+            proj_x = p0[0] + t * dx
+            proj_y = p0[1] + t * dy
+            dist = dist_xy(x, y, proj_x, proj_y)
+            if dist < best_dist:
+                best_dist = dist
+                best_s = cumulative + t * seg_len
+            cumulative += seg_len
+        return best_s, best_dist
+
+    def _find_route_crosswalk_spawn(self, route_points=None, route_length_m=None):
+        route_points = route_points or getattr(self, "route_points", [])
+        route_length_m = route_length_m if route_length_m is not None else getattr(self, "route_length_m", 0.0)
+        if not getattr(self.map_loader, "singlecrosswalk_set", None):
+            return None
+
+        max_dist_m = float(self.cfg.get("pedestrian_route_crosswalk_max_dist_m", 8.0))
+        min_s_m = float(self.cfg.get("pedestrian_crosswalk_min_s_m", 20.0))
+        end_margin_m = float(self.cfg.get("pedestrian_crosswalk_end_margin_m", 20.0))
+
+        candidates = []
+        for scw_id in self.map_loader.singlecrosswalk_set:
+            try:
+                sx, sy, ex, ey, sz, dir_x, dir_y, move_dist = (
+                    self.map_loader.get_singlecrosswalk_spawn_info(scw_id)
+                )
+            except Exception:
+                continue
+
+            cx = (sx + ex) * 0.5
+            cy = (sy + ey) * 0.5
+            route_s, route_dist = self._route_projection_for_points(route_points, cx, cy)
+            if route_dist > max_dist_m:
+                continue
+            if route_s < min_s_m:
+                continue
+            if route_length_m > 0.0 and route_length_m - route_s < end_margin_m:
+                continue
+
+            candidates.append(
+                {
+                    "singlecrosswalk_id": scw_id,
+                    "start_x": sx,
+                    "start_y": sy,
+                    "end_x": ex,
+                    "end_y": ey,
+                    "z": sz,
+                    "dir_x": dir_x,
+                    "dir_y": dir_y,
+                    "move_dist": move_dist,
+                    "route_s": route_s,
+                    "route_dist": route_dist,
+                }
+            )
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item["route_s"], item["route_dist"]))
+        return candidates[0]
+
+    def _load_crosswalk_spawn_info(self):
+        crosswalk = self._find_route_crosswalk_spawn()
+        if crosswalk is None and self.cfg.get("crosswalk_id"):
+            crosswalk_id = self.cfg["crosswalk_id"]
+            sx, sy, ex, ey, sz, dir_x, dir_y, move_dist = self.map_loader.get_crosswalk_spawn_info(crosswalk_id)
+            crosswalk = {
+                "singlecrosswalk_id": crosswalk_id,
+                "start_x": sx,
+                "start_y": sy,
+                "end_x": ex,
+                "end_y": ey,
+                "z": sz,
+                "dir_x": dir_x,
+                "dir_y": dir_y,
+                "move_dist": move_dist,
+                "route_s": project_distance_on_polyline(self.route_points, (sx + ex) * 0.5, (sy + ey) * 0.5),
+                "route_dist": 0.0,
+            }
+        if crosswalk is None:
+            raise RuntimeError("No usable singlecrosswalk found near selected route")
+
+        sx = crosswalk["start_x"]
+        sy = crosswalk["start_y"]
+        ex = crosswalk["end_x"]
+        ey = crosswalk["end_y"]
+        dir_x = crosswalk["dir_x"]
+        dir_y = crosswalk["dir_y"]
+        ped_yaw = math.degrees(math.atan2(dir_y, dir_x))
+        crosswalk["yaw"] = ped_yaw
+        self._crosswalk_spawn = crosswalk
+        print(
+            f"[UrbanPedestrianYield] singlecrosswalk={crosswalk['singlecrosswalk_id']} "
+            f"start=({sx:.2f},{sy:.2f}) end=({ex:.2f},{ey:.2f}) "
+            f"route_s={crosswalk['route_s']:.1f}m route_dist={crosswalk['route_dist']:.1f}m"
+        )
+
+    def _select_pedestrian_model(self):
+        models = list(self.cfg.get("pedestrian_models", []))
+        if not models and hasattr(self.grpc, "get_available_pedestrian_models"):
+            models = self.grpc.get_available_pedestrian_models()
+        if not models:
+            raise RuntimeError("No pedestrian model available. Set pedestrian_models in config.")
+        return self.random.choice(models)
+
+    def spawn_pedestrian_at_crosswalk(self):
+        sp = self._crosswalk_spawn
+        # sp: start_x/y = 크로스워크 한쪽 끝 중점, end_x/y = 반대쪽 끝 중점
+        #     dir_x/y = start→end 방향 단위벡터, move_dist = 크로스워크 폭, z = 높이
+        base_speed = float(self.cfg.get("pedestrian_speed_mps", 1.2))
+        label = self.cfg.get("pedestrian_label", "pedestrian_yield_target")
+        model = self._select_pedestrian_model()
+        sidewalk_offset_m = float(self.cfg.get("pedestrian_sidewalk_offset_m", 1.5))
+
+        # 보행자 스폰: start 쪽 인도 (start에서 dir 반대 방향으로 offset)
+        spawn_x = sp["start_x"] - sp["dir_x"] * sidewalk_offset_m
+        spawn_y = sp["start_y"] - sp["dir_y"] * sidewalk_offset_m
+        # 목적지: end 쪽 인도 (end에서 dir 방향으로 offset)
+        dest_x = sp["end_x"] + sp["dir_x"] * sidewalk_offset_m
+        dest_y = sp["end_y"] + sp["dir_y"] * sidewalk_offset_m
+        # 이동 거리 = 크로스워크 폭 + 양쪽 인도 offset
+        move_dist = sp["move_dist"] + sidewalk_offset_m * 2
+        speed = base_speed
+        if self.cfg.get("pedestrian_auto_speed_by_crosswalk", True):
+            target_crossing_sec = float(self.cfg.get("pedestrian_target_crossing_sec", 7.0))
+            min_speed = float(self.cfg.get("pedestrian_min_speed_mps", 1.0))
+            max_speed = float(self.cfg.get("pedestrian_max_speed_mps", 2.4))
+            if target_crossing_sec > 0.0:
+                speed = max(min_speed, min(max_speed, move_dist / target_crossing_sec))
+
+        ped_yaw = math.degrees(math.atan2(sp["dir_y"], sp["dir_x"]))
+        ped_yaw += float(self.cfg.get("pedestrian_yaw_offset_deg", 0.0))
+
+        self._ped_dest_x = dest_x
+        self._ped_dest_y = dest_y
+        self._ped_spawn_x = spawn_x
+        self._ped_spawn_y = spawn_y
+        self._ped_move_dist = move_dist
+        self._ped_yaw = ped_yaw
+        self._ped_direction_checked = False
+        self._ped_direction_respawned = False
+
+        print(
+            f"[UrbanPedestrianYield] crosswalk start=({sp['start_x']:.2f},{sp['start_y']:.2f}) "
+            f"end=({sp['end_x']:.2f},{sp['end_y']:.2f}) dir=({sp['dir_x']:.3f},{sp['dir_y']:.3f})"
+        )
+        print(
+            f"[UrbanPedestrianYield] ped spawn=({spawn_x:.2f},{spawn_y:.2f}) "
+            f"dest=({dest_x:.2f},{dest_y:.2f}) yaw={ped_yaw:.1f}deg "
+            f"move_dist={move_dist:.2f}m speed={speed:.2f}m/s"
+        )
+
+        transform = self.grpc.make_transform(spawn_x, spawn_y, sp["z"], ped_yaw)
+        pedestrian = self.grpc.spawn_pedestrian(
+            transform,
+            model,
+            label,
+            velocity=speed,
+            active_dist=0.0,
+            move_dist=move_dist,
+            start_action=True,
+        )
+        if pedestrian is None:
+            raise RuntimeError(f"Failed to spawn pedestrian model={model}")
+
+        self.pedestrian = pedestrian
+        self.pedestrian_phase = "crossing"
+        self.pedestrian_started_at = time.time()
+        self._pedestrian_speed = speed
+        self._pedestrian_model = model
+        print(
+            f"[UrbanPedestrianYield] pedestrian crossing START "
+            f"singlecrosswalk={sp['singlecrosswalk_id']}"
+        )
+
+    def _respawn_pedestrian_with_yaw(self, yaw):
+        if self.pedestrian is not None:
+            self._despawn_pedestrian()
+
+        transform = self.grpc.make_transform(
+            self._ped_spawn_x,
+            self._ped_spawn_y,
+            self._crosswalk_spawn["z"],
+            yaw,
+        )
+        pedestrian = self.grpc.spawn_pedestrian(
+            transform,
+            self._pedestrian_model,
+            self.cfg.get("pedestrian_label", "pedestrian_yield_target"),
+            velocity=float(self._pedestrian_speed),
+            active_dist=0.0,
+            move_dist=float(self._ped_move_dist),
+            start_action=True,
+        )
+        if pedestrian is None:
+            raise RuntimeError(f"Failed to respawn pedestrian model={self._pedestrian_model}")
+
+        self.pedestrian = pedestrian
+        self._ped_yaw = yaw
+        self.pedestrian_started_at = time.time()
+        print(f"[UrbanPedestrianYield] pedestrian direction corrected yaw={yaw:.1f}deg")
+
+    def _maybe_correct_pedestrian_direction(self, ped_x, ped_y, elapsed):
+        if self._ped_direction_checked or self._ped_direction_respawned:
+            return False
+        if elapsed < float(self.cfg.get("pedestrian_direction_check_sec", 0.8)):
+            return False
+
+        desired_x = self._ped_dest_x - self._ped_spawn_x
+        desired_y = self._ped_dest_y - self._ped_spawn_y
+        desired_len = math.hypot(desired_x, desired_y)
+        moved_x = ped_x - self._ped_spawn_x
+        moved_y = ped_y - self._ped_spawn_y
+        moved_len = math.hypot(moved_x, moved_y)
+        if desired_len < 1e-3 or moved_len < float(self.cfg.get("pedestrian_direction_check_min_move_m", 0.4)):
+            return False
+
+        dot = (desired_x * moved_x + desired_y * moved_y) / (desired_len * moved_len)
+        self._ped_direction_checked = True
+        if dot >= 0.0:
+            return False
+
+        self._ped_direction_respawned = True
+        corrected_yaw = float(self._ped_yaw) + 180.0
+        print(
+            f"[UrbanPedestrianYield] pedestrian moved opposite direction; "
+            f"dot={dot:.2f}, respawn with yaw={corrected_yaw:.1f}"
+        )
+        self._respawn_pedestrian_with_yaw(corrected_yaw)
+        return True
+
+    def _despawn_pedestrian(self):
+        if hasattr(self, "pedestrian") and self.pedestrian is not None:
+            try:
+                self.pedestrian.destroy()
+            except Exception:
+                pass
+            self.pedestrian = None
+
+    def _is_vehicle_signal_green(self, color):
+        if color is None:
+            return False
+        # 차량 신호 GREEN 계열: 비트 4 이상 (SG=16, LG=32, RG=64, ...)
+        # RED=1, YELLOW=4
+        return bool(color & 0xFFF0)
+
+    def _finish_pedestrian_crossing(self, reason, elapsed):
+        dest_x = getattr(self, "_ped_dest_x", None)
+        dest_y = getattr(self, "_ped_dest_y", None)
+        if dest_x is not None and dest_y is not None and hasattr(self.pedestrian, "set_transform"):
+            z = self._crosswalk_spawn["z"]
+            yaw = float(getattr(self, "_ped_yaw", self._crosswalk_spawn.get("yaw", 0.0)))
+            try:
+                self.pedestrian.set_transform(self.grpc.make_transform(dest_x, dest_y, z, yaw))
+            except Exception:
+                pass
+
+        if self.cfg.get("pedestrian_despawn_after_crossing", True):
+            self._despawn_pedestrian()
+
+        self.pedestrian_phase = "cleared"
+        print(f"[UrbanPedestrianYield] pedestrian crossing DONE reason={reason} elapsed={elapsed:.1f}s")
+
+    def _update_pedestrian(self, ego_x, ego_y, current_s):
+        if getattr(self, "pedestrian_phase", "waiting") == "cleared":
+            return
+
+        trigger_dist_m = float(self.cfg.get("pedestrian_trigger_dist_m", 35.0))
+        now = time.time()
+
+        if self.pedestrian_phase == "waiting":
+            crosswalk_s = float(self._crosswalk_spawn["route_s"])
+            remaining_to_crosswalk = crosswalk_s - current_s
+            if -5.0 <= remaining_to_crosswalk <= trigger_dist_m:
+                self.spawn_pedestrian_at_crosswalk()
+            return
+
+        if self.pedestrian_phase == "crossing":
+            max_crossing_sec = float(self.cfg.get("pedestrian_max_crossing_sec", 15.0))
+            elapsed = now - float(self.pedestrian_started_at or now)
+            dest_x = getattr(self, "_ped_dest_x", None)
+            dest_y = getattr(self, "_ped_dest_y", None)
+
+            reached = False
+            if dest_x is not None and dest_y is not None:
+                try:
+                    ped_state = self.pedestrian.get_actor_state()
+                    ped_x = float(ped_state.transform.location.x)
+                    ped_y = float(ped_state.transform.location.y)
+                    if self._maybe_correct_pedestrian_direction(ped_x, ped_y, elapsed):
+                        return
+                    dist_to_dest = dist_xy(ped_x, ped_y, dest_x, dest_y)
+                    reached = dist_to_dest <= 2.0
+                    if int(elapsed) % 2 == 0 and elapsed - int(elapsed) < 0.1:
+                        print(
+                            f"[UrbanPedestrianYield] crossing pos=({ped_x:.2f},{ped_y:.2f}) "
+                            f"dest=({dest_x:.2f},{dest_y:.2f}) dist={dist_to_dest:.2f}m "
+                            f"elapsed={elapsed:.1f}s"
+                        )
+                except Exception as e:
+                    if elapsed - float(getattr(self, "_last_ped_state_error_print", -10.0)) >= 2.0:
+                        print(f"[UrbanPedestrianYield] get_actor_state failed: {e}")
+                        self._last_ped_state_error_print = elapsed
+                    reached = elapsed >= max_crossing_sec
+
+            if reached or elapsed >= max_crossing_sec:
+                reason = "reached_dest" if reached else "timeout"
+                self._finish_pedestrian_crossing(reason, elapsed)
+
+    def cleanup(self):
+        self._despawn_pedestrian()
+        super().cleanup()
+
+    def run_gt_bev_expert_timeline(self):
+        timeout_sec = self.cfg.get("timeout_sec", 0.0)
+        use_timeout = timeout_sec is not None and float(timeout_sec) > 0.0
+        goal_tolerance_m = float(self.cfg.get("goal_tolerance_m", 4.0))
+        check_period_sec = float(self.cfg.get("check_period_sec", 0.05))
+        print_period_sec = float(self.cfg.get("print_period_sec", 1.0))
+        max_cross_track_error_m = float(self.cfg.get("gt_bev_max_cross_track_error_m", 10.0))
+        arrival_stop_distance_m = float(
+            self.cfg.get("gt_bev_arrival_stop_distance_m", max(goal_tolerance_m, 6.0))
+        )
+        off_route_timeout_sec = float(self.cfg.get("off_route_timeout_sec", 5.0))
+        off_route_grace_sec = float(self.cfg.get("off_route_grace_sec", 2.0))
+        max_laps = int(self.cfg.get("max_laps", 0))
+        print(
+            f"[UrbanPedestrianYield] GT_BEV running. "
+            f"crosswalk={self._crosswalk_spawn['singlecrosswalk_id']}, "
+            f"crosswalk_s={self._crosswalk_spawn['route_s']:.1f}m, "
+            f"arrival_stop={arrival_stop_distance_m}m"
+        )
+
+        lap = 0
+        lap_start_time = time.time()
+        last_print_time = 0.0
+        off_route_enter_time = None
+        self.gt_bev_last_s = 0.0
+
+        while True:
+            elapsed = time.time() - lap_start_time
+            if not hasattr(self, "gt_bev_expert") or self.gt_bev_expert is None or not self.gt_bev_expert.is_running():
+                raise RuntimeError("GT_BEV expert process stopped unexpectedly")
+
+            ego_state = self.grpc.get_ego_motion_state()
+            ego_x = ego_state["x"]
+            ego_y = ego_state["y"]
+            current_link = ego_state.get("current_link", "")
+            dist_to_goal = dist_xy(ego_x, ego_y, self.goal_x, self.goal_y)
+
+            current_s, _, _, cross_track_error = self.project_on_route_near_progress(
+                ego_x, ego_y, prev_s=getattr(self, "gt_bev_last_s", None),
+            )
+            current_s = max(getattr(self, "gt_bev_last_s", 0.0), current_s)
+            self.gt_bev_last_s = current_s
+            remaining_s = max(0.0, self.route_length_m - current_s)
+
+            self._update_pedestrian(ego_x, ego_y, current_s)
+
+            goal_reached = (
+                remaining_s <= arrival_stop_distance_m and cross_track_error <= max_cross_track_error_m
+            ) or dist_to_goal <= goal_tolerance_m
+
+            if elapsed >= off_route_grace_sec and cross_track_error > max_cross_track_error_m:
+                if off_route_enter_time is None:
+                    off_route_enter_time = time.time()
+            else:
+                off_route_enter_time = None
+
+            if elapsed - last_print_time >= print_period_sec:
+                print(
+                    f"[UrbanPedestrianYield] lap={lap + 1} t={elapsed:.1f}s "
+                    f"speed={ego_state['speed']:.1f}m/s link={current_link} "
+                    f"s={current_s:.1f}/{self.route_length_m:.1f} "
+                    f"ped={self.pedestrian_phase} "
+                    f"cte={cross_track_error:.2f} remain={remaining_s:.1f}"
+                )
+                last_print_time = elapsed
+
+            if (
+                off_route_enter_time is not None
+                and time.time() - off_route_enter_time >= off_route_timeout_sec
+            ):
+                print(
+                    f"[UrbanPedestrianYield] OFF ROUTE - restart "
+                    f"cte={cross_track_error:.2f}m, link={current_link}, elapsed={elapsed:.1f}s"
+                )
+                self.stop_pure_pursuit_control()
+                self.restart_to_start_and_drive()
+                lap_start_time = time.time()
+                last_print_time = 0.0
+                off_route_enter_time = None
+                self.gt_bev_last_s = 0.0
+                continue
+
+            if goal_reached:
+                lap += 1
+                print(
+                    f"[UrbanPedestrianYield] GOAL REACHED lap={lap}, "
+                    f"dist={dist_to_goal:.2f}m, s={current_s:.1f}/{self.route_length_m:.1f}, "
+                    f"elapsed={elapsed:.1f}s"
+                )
+                self.stop_pure_pursuit_control()
+
+                if max_laps > 0 and lap >= max_laps:
+                    print("[UrbanPedestrianYield] max_laps reached. finish scenario.")
+                    break
+
+                self.restart_to_start_and_drive()
+                lap_start_time = time.time()
+                last_print_time = 0.0
+                off_route_enter_time = None
+                self.gt_bev_last_s = 0.0
+                continue
+
+            if use_timeout and elapsed >= float(timeout_sec):
+                print(
+                    f"[UrbanPedestrianYield] TIMEOUT lap={lap + 1}, "
                     f"dist={dist_to_goal:.2f}m, elapsed={elapsed:.1f}s"
                 )
                 self.stop_pure_pursuit_control()

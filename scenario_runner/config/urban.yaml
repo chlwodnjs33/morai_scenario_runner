@@ -101,6 +101,8 @@ scenarios:
     lead_spawn_gap_m: 25.0
     npc_use_route: false
     npc_brake_front_only: true
+    npc_brake_same_direction_only: true
+    npc_brake_heading_min_cos: 0.5
     npc_min_spacing_m: 8.0
     npc_speed_mps: 8.0
     npc_speed_jitter_mps: 0.0
@@ -135,3 +137,118 @@ scenarios:
     cruise_type: constant
     link_speed_ratio: 100
     constant_velocity: 60
+  traffic_jam:
+    start_link: A219BS010404
+    end_link: A219BS010469
+    randomize_links: true
+    zone_links_path: scenario_runner/config/urban_links.yaml
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_attempts: 300
+    random_route_pool_enabled: true
+    random_recent_start_memory: 8
+    random_recent_route_memory: 16
+    random_min_route_length_m: 70.0
+    random_max_route_length_m: 0.0
+    random_max_route_links: 0
+    random_max_route_point_gap_m: 8.0
+    route_setup_attempts: 5
+    drive_control_mode: gt_bev_external
+    gt_bev_repo_path: third_party/GT_BEV
+    gt_bev_map_name: R_KR_PG_KATRI
+    gt_bev_max_velocity_kmh: 45.0
+    gt_bev_traffic_light_control: false
+    gt_bev_ros_remaps:
+      - /ctrl_cmd:=/ctrl_cmd_0
+    gt_bev_arrival_stop_distance_m: 6.0
+    gt_bev_max_cross_track_error_m: 10.0
+    ego_spawn_offset_m: 15.0
+    ego_spawn_min_offset_m: 10.0
+    ego_spawn_max_offset_m: 25.0
+    goal_offset_from_end_m: 3.0
+    npc_vehicle_models:
+      - 2014_Kia_K7
+      - 2020_Hyundai_Ioniq
+      - 2017_Hyundai_Grandeur
+      - 2016_Hyundai_Sonata
+    jam_queue_count_min: 3
+    jam_queue_count_max: 5
+    jam_queue_start_gap_m: 20.0
+    jam_queue_spacing_m: 7.0
+    jam_release_gap_m: 18.0
+    jam_force_release_sec: 8.0
+    jam_stop_duration_sec: 3.5
+    jam_go_duration_sec: 6.0
+    jam_cycles_per_episode: 2
+    jam_background_npc_min: 2
+    jam_background_npc_max: 4
+    npc_use_route: false
+    npc_min_spacing_m: 8.0
+    npc_speed_mps: 7.0
+    npc_speed_jitter_mps: 1.0
+    npc_speed_limit: 9.0
+    decision_range_m: 30.0
+    timeout_sec: 0.0
+    goal_tolerance_m: 4.0
+    complete_on_end_link: true
+    end_link_hold_sec: 0.5
+    off_route_timeout_sec: 3.0
+    off_route_grace_sec: 2.0
+    print_period_sec: 1.0
+    check_period_sec: 0.05
+    max_laps: 0
+  pedestrian_yield:
+    randomize_links: true
+    zone_links_path: scenario_runner/config/urban_links.yaml
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_attempts: 300
+    random_route_pool_enabled: true
+    random_recent_start_memory: 8
+    random_recent_route_memory: 16
+    random_min_route_length_m: 40.0
+    random_max_route_length_m: 0.0
+    random_max_route_links: 0
+    random_max_route_point_gap_m: 8.0
+    route_setup_attempts: 5
+    drive_control_mode: gt_bev_external
+    gt_bev_repo_path: third_party/GT_BEV
+    gt_bev_map_name: R_KR_PG_KATRI
+    gt_bev_max_velocity_kmh: 30.0
+    gt_bev_traffic_light_control: false
+    gt_bev_ros_remaps:
+      - /ctrl_cmd:=/ctrl_cmd_0
+    gt_bev_arrival_stop_distance_m: 6.0
+    gt_bev_max_cross_track_error_m: 10.0
+    ego_spawn_offset_m: 5.0
+    goal_offset_from_end_m: 3.0
+    pedestrian_route_crosswalk_max_dist_m: 8.0
+    pedestrian_crosswalk_min_s_m: 20.0
+    pedestrian_crosswalk_end_margin_m: 20.0
+    pedestrian_models:
+      - Man1
+      - Woman1
+      - Man2
+      - Woman2
+    pedestrian_label: pedestrian_yield_target
+    pedestrian_sidewalk_offset_m: 1.5
+    pedestrian_trigger_dist_m: 18.0
+    pedestrian_speed_mps: 3.0
+    pedestrian_auto_speed_by_crosswalk: true
+    pedestrian_target_crossing_sec: 7.0
+    pedestrian_min_speed_mps: 1.0
+    pedestrian_max_speed_mps: 2.4
+    pedestrian_yaw_offset_deg: 0.0
+    pedestrian_direction_check_sec: 0.8
+    pedestrian_direction_check_min_move_m: 0.4
+    pedestrian_max_crossing_sec: 25.0
+    pedestrian_despawn_after_crossing: false
+    timeout_sec: 0.0
+    goal_tolerance_m: 4.0
+    complete_on_end_link: true
+    end_link_hold_sec: 0.5
+    off_route_timeout_sec: 5.0
+    off_route_grace_sec: 2.0
+    print_period_sec: 1.0
+    check_period_sec: 0.05
+    max_laps: 0

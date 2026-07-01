@@ -1,0 +1,43 @@
+{
+  "common": {
+    "sampling_rate": 30,
+    "vehicle_length": 4,
+    "wheelbase": 2.8,
+    "max_steering": 36.25
+  },
+  "map": {
+    "name": "R_KR_PG_KATRI",
+    "traffic_light_control": false,
+    "is_closed_path": false,
+    "local_path_size": 50,
+    "use_mgeo_path": false,
+    "mgeo": {
+      "start_node": "A119BS010235",
+      "end_node": "A119BS010146"
+    }
+  },
+  "planning": {
+    "velocity_profile": {
+      "max_velocity": 60.0,
+      "road_friction": 0.15,
+      "window_size": 50
+    },
+    "adaptive_cruise_control": {
+      "velocity_gain": 0.5,
+      "distance_gain": 1,
+      "time_gap": 0.8
+    }
+  },
+  "control": {
+    "pid": {
+      "p_gain": 0.075,
+      "i_gain": 0.0001,
+      "d_gain": 0.025
+    },
+    "pure_pursuit": {
+      "lfd_gain": 0.65,
+      "min_lfd": 2,
+      "max_lfd": 30
+    }
+  }
+}

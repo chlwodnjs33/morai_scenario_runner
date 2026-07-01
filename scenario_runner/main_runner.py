@@ -6,7 +6,9 @@ from utils.grpc_client import MoraiGrpcClient
 from utils.map_loader import MGeoMapLoader
 from zones.urban_scenarios import (
     UrbanBasicDriveScenario,
+    UrbanPedestrianYieldScenario,
     UrbanSuddenBrakeExpertScenario,
+    UrbanTrafficJamScenario,
 )
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -73,6 +75,20 @@ def main():
         )
     elif args.zone == "urban" and args.scenario == "sudden_brake":
         scenario = UrbanSuddenBrakeExpertScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.zone == "urban" and args.scenario in ("traffic_jam", "bottleneck"):
+        scenario = UrbanTrafficJamScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.zone == "urban" and args.scenario in ("pedestrian_yield", "yield_pedestrian"):
+        scenario = UrbanPedestrianYieldScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
             global_cfg=global_cfg,

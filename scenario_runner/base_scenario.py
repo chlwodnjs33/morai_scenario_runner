@@ -18,8 +18,8 @@ class BaseScenario:
         pass
 
     def run(self):
-        self.setup()
         try:
+            self.setup()
             self.run_timeline()
         finally:
             self.cleanup()

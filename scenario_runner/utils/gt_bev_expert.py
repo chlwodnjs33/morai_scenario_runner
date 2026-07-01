@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -130,7 +131,12 @@ class GTBEVExpertController:
             "expert.src.main",
             *self.ros_remaps,
         ]
-        self.process = subprocess.Popen(cmd, cwd=self.src_parent, env=env)
+        self.process = subprocess.Popen(
+            cmd,
+            cwd=self.src_parent,
+            env=env,
+            start_new_session=True,
+        )
         print(f"[GT_BEV] expert process started: pid={self.process.pid}, cmd={' '.join(cmd)}")
 
     def stop_process(self):
@@ -139,14 +145,26 @@ class GTBEVExpertController:
 
         if self.process.poll() is None:
             print(f"[GT_BEV] stopping expert process: pid={self.process.pid}")
-            self.process.terminate()
+            self._terminate_process_group(signal.SIGTERM)
             try:
                 self.process.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                self._terminate_process_group(signal.SIGKILL)
                 self.process.wait(timeout=3.0)
 
         self.process = None
 
     def is_running(self):
         return self.process is not None and self.process.poll() is None
+
+    def _terminate_process_group(self, sig):
+        try:
+            os.killpg(os.getpgid(self.process.pid), sig)
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            print(f"[GT_BEV] process-group stop fallback: {e}")
+            if sig == signal.SIGTERM:
+                self.process.terminate()
+            else:
+                self.process.kill()

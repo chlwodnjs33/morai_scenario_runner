@@ -2,6 +2,14 @@ import os
 import sys
 
 
+class _ActorHandleUnavailable:
+    def destroy(self):
+        return False
+
+    def get_actor_state(self):
+        raise RuntimeError("actor handle unavailable")
+
+
 class MoraiGrpcClient:
     def __init__(self, global_cfg: dict):
         self.global_cfg = global_cfg
@@ -312,9 +320,162 @@ class MoraiGrpcClient:
         print(f"[Spawn] vehicle {label}: {vehicle is not None}")
         return vehicle
 
+    def spawn_pedestrian(
+        self,
+        transform,
+        model_name,
+        label,
+        velocity=1.3,
+        active_dist=100.0,
+        move_dist=20.0,
+        start_action=False,
+    ):
+        pedestrian = self.world.spawn_pedestrian(
+            transform=transform,
+            model_name=model_name,
+            label=label,
+            velocity=float(velocity),
+            active_dist=float(active_dist),
+            move_dist=float(move_dist),
+            start_action=bool(start_action),
+        )
+        print(f"[Spawn] pedestrian {label}: {pedestrian is not None}")
+        return pedestrian
+
+    def control_pedestrian(self, pedestrian, direction_x, direction_y, speed, verbose=False):
+        from proto.morai.common.type_pb2 import Vector3
+
+        if pedestrian is None or not hasattr(pedestrian, "control"):
+            return False
+
+        direction = Vector3()
+        direction.x = float(direction_x)
+        direction.y = float(direction_y)
+        direction.z = 0.0
+        try:
+            ok = pedestrian.control(direction, float(speed))
+        except Exception as e:
+            if verbose:
+                print(f"[Pedestrian] control failed: {e}")
+            return False
+        if verbose:
+            print(
+                f"[Pedestrian] control dir=({direction_x:.3f},{direction_y:.3f}) "
+                f"speed={speed}: {ok}"
+            )
+        return ok
+
+    def spawn_pedestrian_with_waypoints(
+        self, transform, model_name, label, dest_x, dest_y, dest_z, speed, move_dist=50.0
+    ):
+        """waypoints 포함해서 보행자 스폰 — MORAI가 월드 좌표로 직접 이동."""
+        from proto.morai.actor.actor_spawn_pb2 import (
+            PedestrianSpawnParam, PedestrianWaypoints, ActorSpawnInfo,
+        )
+        from proto.morai.common.type_pb2 import Vector3
+        from proto.morai.common.enum_pb2 import OBJECT_TYPE_PEDESTRIAN
+
+        spawn_info = self.world._get_spawn_info(
+            OBJECT_TYPE_PEDESTRIAN, transform, model_name, label, ""
+        )
+
+        wps = PedestrianWaypoints()
+        wp = wps.waypoints.add()
+        wp.waypoint.CopyFrom(Vector3(x=float(dest_x), y=float(dest_y), z=float(dest_z)))
+        wp.pause_time = 0.0
+        wp.speed = float(speed)
+
+        param = PedestrianSpawnParam()
+        param.spawn_info.CopyFrom(spawn_info)
+        param.velocity = float(speed)
+        param.active_dist = 0.0
+        param.move_dist = float(move_dist)
+        param.start_action = True
+        param.waypoints.CopyFrom(wps)
+
+        from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
+        from api.pedestrian import Pedestrian
+
+        response = self.world._sim_adapter.spawn_pedestrian(param)
+        ok = response is not None and (
+            response.status == STATUS_CODE_SUCCESS
+            or str(response.description).lower() == "success"
+        )
+        if not ok:
+            print(f"[Spawn] pedestrian_with_waypoints unavailable; fallback needed: {response}")
+            return None
+        if not response.custom_message:
+            ped = self.find_spawned_pedestrian_near(transform.location.x, transform.location.y)
+            if ped is not None:
+                print(f"[Spawn] pedestrian_with_waypoints {label}: ok via actor search")
+                return ped
+            print(f"[Spawn] pedestrian_with_waypoints {label}: ok, but actor id unavailable")
+            return _ActorHandleUnavailable()
+
+        ped = Pedestrian(self.world._sim_adapter, self.world._client_key, response.custom_message)
+        self.world._actors[response.custom_message] = ped
+        print(f"[Spawn] pedestrian_with_waypoints {label} dest=({dest_x:.2f},{dest_y:.2f}): ok")
+        return ped
+
+    def find_spawned_pedestrian_near(self, x, y, max_dist_m=5.0):
+        from api.pedestrian import Pedestrian
+        try:
+            states = self.world.get_all_actors_state(vehicle=False, pedestrian=True, obstacle=False)
+        except Exception as e:
+            print(f"[Spawn] pedestrian actor search failed: {e}")
+            return None
+        if states is None:
+            return None
+
+        best = None
+        best_dist = float("inf")
+        for state in states.states:
+            actor_id = state.actor_info.id.value
+            if not actor_id:
+                continue
+            dx = float(state.transform.location.x) - float(x)
+            dy = float(state.transform.location.y) - float(y)
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < best_dist:
+                best = actor_id
+                best_dist = dist
+
+        if best is None or best_dist > float(max_dist_m):
+            return None
+        ped = Pedestrian(self.world._sim_adapter, self.world._client_key, best)
+        self.world._actors[best] = ped
+        return ped
+
+    def set_pedestrian_waypoint(self, pedestrian, dest_x, dest_y, dest_z, speed):
+        """보행자에게 월드 좌표 목적지를 지정해 이동시킴 (SetPedestrianWaypoint RPC)."""
+        from proto.morai.actor.actor_set_pb2 import PedestrianWaypointInfo
+        from proto.morai.actor.actor_spawn_pb2 import PedestrianWaypoints
+        from proto.morai.common.type_pb2 import Vector3
+
+        wps = PedestrianWaypoints()
+        wp = wps.waypoints.add()
+        wp.waypoint.CopyFrom(Vector3(x=float(dest_x), y=float(dest_y), z=float(dest_z)))
+        wp.pause_time = 0.0
+        wp.speed = float(speed)
+
+        info = PedestrianWaypointInfo()
+        info.actor_info.CopyFrom(pedestrian.get_object_info())
+        info.is_create = True
+        info.waypoints.CopyFrom(wps)
+
+        try:
+            from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
+            result = self.world._sim_adapter._actor_stub.SetPedestrianWaypoint(info)
+            ok = result is not None and result.status == STATUS_CODE_SUCCESS
+            print(f"[Pedestrian] set_waypoint dest=({dest_x:.2f},{dest_y:.2f}) speed={speed}: {ok}")
+            return ok
+        except Exception as e:
+            print(f"[Pedestrian] set_waypoint failed: {e}")
+            return False
+
     def get_available_surround_vehicle_models(self):
         try:
-            objects = self.client._sim_adapter.get_available_objects()
+            objects = self.get_available_objects()
         except Exception as e:
             print(f"[MORAI] get_available_surround_vehicle_models failed: {e}")
             return []
@@ -323,6 +484,40 @@ class MoraiGrpcClient:
             return []
 
         return list(objects.surround_vehicle)
+
+    def get_available_pedestrian_models(self):
+        try:
+            objects = self.get_available_objects()
+        except Exception as e:
+            print(f"[MORAI] get_available_pedestrian_models failed: {e}")
+            return []
+
+        if objects is None:
+            return []
+
+        return list(objects.pedestrian)
+
+    def get_available_objects(self):
+        from proto.morai.simulator.category_obstacles_pb2 import CategoryObstacles
+
+        param = CategoryObstacles()
+        param.vehicle = True
+        param.pedestrian = True
+        param.obstacle = True
+        param.spawn_point = True
+        param.map_object = True
+        return self.client._sim_adapter._simulator_stub.GetAvailableObject(param)
+
+    def get_traffic_light_color_by_link(self, link_id):
+        from proto.morai.infrastructure.infrastructure_enum_pb2 import GET_TL_INFO_BY_LINK_ID
+        try:
+            result = self.world.get_traffic_light_info(GET_TL_INFO_BY_LINK_ID, str(link_id))
+            if result is None:
+                return None
+            return result.color
+        except Exception as e:
+            print(f"[MORAI] get_traffic_light_color_by_link failed link={link_id}: {e}")
+            return None
 
     def set_vehicle_speed(self, vehicle, speed):
         from proto.morai.actor.actor_enum_pb2 import LONG_CMD_TYPE_SPEED
@@ -400,7 +595,10 @@ class MoraiGrpcClient:
 
     def stop(self):
         if self.client is not None:
-            self.client.finalize()
+            try:
+                self.client.finalize()
+            except AttributeError:
+                self.client.disconnect()
             print("[MORAI] finalized")
 
 
