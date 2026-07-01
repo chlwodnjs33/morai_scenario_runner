@@ -7,7 +7,7 @@ MORAI 시뮬레이터용 시나리오 자동화 실행기입니다.
 - Python 3.8+
 - ROS 2 (GT-BEV 외부 제어 모드 사용 시)
 - MORAI Simulator
-- MGeo 맵 데이터
+- MGeo 맵 데이터는 repo 내부 `third_party/GT_BEV/R_KR_PG_KATRI`를 기본으로 사용합니다.
 
 ## 설치
 
@@ -16,9 +16,9 @@ git clone <repo_url>
 cd morai_scenario_runner
 ```
 
-### 로컬 경로 설정
+### 로컬 경로 설정 (선택)
 
-MGeo 맵 경로는 머신마다 다르므로 별도 파일로 관리합니다.
+기본 실행에는 `local.yaml`이 필요하지 않습니다. 다른 MGeo 경로를 쓰고 싶을 때만 별도 파일로 덮어씁니다.
 
 ```bash
 cp scenario_runner/config/local.yaml.example scenario_runner/config/local.yaml

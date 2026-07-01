@@ -32,8 +32,12 @@ from cv_bridge import CvBridge
 # 설정
 # ══════════════════════════════════════════════════════════════════════════════
 
-_WS_ROOT  = os.path.expanduser("~/GT_BEV")
-MAP_DIR   = os.path.join(_WS_ROOT, "R_KR_PG_KATRI")
+CURRENT_PATH = os.path.dirname(os.path.realpath(__file__))
+GT_BEV_ROOT = os.path.normpath(os.path.join(CURRENT_PATH, "../../.."))
+MAP_DIR = os.environ.get(
+    "SCENARIO_MGEO_ROOT",
+    os.path.join(GT_BEV_ROOT, "R_KR_PG_KATRI"),
+)
 
 SIZE      = 320
 RES       = 0.2

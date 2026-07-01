@@ -7,3 +7,4 @@ morai:
   ego_vehicle_model: 2023_Hyundai_Ioniq5
 paths:
   grpc_src: third_party/grpc_inha_univ/src
+  mgeo_root: third_party/GT_BEV/R_KR_PG_KATRI

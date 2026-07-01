@@ -18,10 +18,9 @@ from class_defs import MGeo
 # ── 설정 ──────────────────────────────────────────────
 MAP_NAME    = 'R_KR_PG_KATRI'
 DEFAULT_MGEO_ROOT = os.path.normpath(os.path.join(current_path, '../../../../' + MAP_NAME))
-LOCAL_MGEO_ROOT = os.path.join('/home/jaewoni/mgeo_ws', MAP_NAME)
 MGEO_ROOT = os.environ.get(
     'SCENARIO_MGEO_ROOT',
-    DEFAULT_MGEO_ROOT if os.path.exists(DEFAULT_MGEO_ROOT) else LOCAL_MGEO_ROOT,
+    DEFAULT_MGEO_ROOT,
 )
 SCREEN_W    = 1200
 SCREEN_H    = 800
