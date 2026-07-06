@@ -80,14 +80,14 @@ def main():
             global_cfg=global_cfg,
             scenario_cfg=scenario_cfg,
         )
-    elif args.zone == "urban" and args.scenario in ("traffic_jam", "bottleneck"):
+    elif args.zone == "urban" and args.scenario == "traffic_jam":
         scenario = UrbanTrafficJamScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
             global_cfg=global_cfg,
             scenario_cfg=scenario_cfg,
         )
-    elif args.zone == "urban" and args.scenario in ("pedestrian_yield", "yield_pedestrian"):
+    elif args.zone == "urban" and args.scenario == "pedestrian_yield":
         scenario = UrbanPedestrianYieldScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
