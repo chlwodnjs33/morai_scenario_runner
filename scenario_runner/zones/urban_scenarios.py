@@ -635,6 +635,7 @@ class UrbanBasicDriveScenario(BaseScenario):
                     print("[UrbanBasicDrive] max_laps reached. finish scenario.")
                     break
 
+                self.notify_lap_end(lap)
                 self.restart_to_start_and_drive()
                 lap_start_time = time.time()
                 last_print_time = 0.0
@@ -665,6 +666,7 @@ class UrbanBasicDriveScenario(BaseScenario):
                     print("[UrbanBasicDrive] max_laps reached. finish scenario.")
                     break
 
+                self.notify_lap_end(lap)
                 self.restart_to_start_and_drive()
                 lap_start_time = time.time()
                 last_print_time = 0.0
@@ -685,6 +687,7 @@ class UrbanBasicDriveScenario(BaseScenario):
                     break
 
                 # world 자체를 재시작해서 route/cruise 상태 초기화
+                self.notify_lap_end(lap)
                 self.restart_to_start_and_drive()
                 lap_start_time = time.time()
                 last_print_time = 0.0
@@ -1072,6 +1075,7 @@ class UrbanBasicDriveScenario(BaseScenario):
                     print("[UrbanBasicDrive] max_laps reached. finish scenario.")
                     break
 
+                self.notify_lap_end(lap)
                 self.restart_to_start_and_drive()
                 lap_start_time = time.time()
                 last_print_time = 0.0
@@ -1184,6 +1188,7 @@ class UrbanBasicDriveScenario(BaseScenario):
                     print("[UrbanBasicDrive] max_laps reached. finish scenario.")
                     break
 
+                self.notify_lap_end(lap)
                 self.restart_to_start_and_drive()
                 lap_start_time = time.time()
                 last_print_time = 0.0
@@ -2423,6 +2428,7 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
                     print("[UrbanSuddenBrake] max_laps reached. finish scenario.")
                     break
 
+                self.notify_lap_end(lap)
                 self.restart_to_start_and_drive()
                 lap_start_time = time.time()
                 last_print_time = 0.0
@@ -3080,6 +3086,7 @@ class UrbanPedestrianYieldScenario(UrbanBasicDriveScenario):
                     print("[UrbanPedestrianYield] max_laps reached. finish scenario.")
                     break
 
+                self.notify_lap_end(lap)
                 self.restart_to_start_and_drive()
                 lap_start_time = time.time()
                 last_print_time = 0.0
