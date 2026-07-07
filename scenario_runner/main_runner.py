@@ -6,9 +6,12 @@ from utils.grpc_client import MoraiGrpcClient
 from utils.map_loader import MGeoMapLoader
 from zones.urban_scenarios import (
     UrbanBasicDriveScenario,
-    UrbanPedestrianYieldScenario,
     UrbanSuddenBrakeExpertScenario,
     UrbanTrafficJamScenario,
+    UrbanPedestrianYieldScenario,
+    HighwayMergeJudgementScenario,
+    RoundaboutMergeScenario,
+    RoundaboutYieldToInsideVehicleScenario,
 )
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -66,29 +69,50 @@ def main():
     print("[DEBUG] loading MGeo")
     map_loader = MGeoMapLoader(global_cfg["paths"]["mgeo_root"])
 
-    if args.zone == "urban" and args.scenario == "basic_drive":
+    if args.scenario == "basic_drive":
         scenario = UrbanBasicDriveScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
             global_cfg=global_cfg,
             scenario_cfg=scenario_cfg,
         )
-    elif args.zone == "urban" and args.scenario == "sudden_brake":
+    elif args.scenario == "sudden_brake":
         scenario = UrbanSuddenBrakeExpertScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
             global_cfg=global_cfg,
             scenario_cfg=scenario_cfg,
         )
-    elif args.zone == "urban" and args.scenario == "traffic_jam":
+    elif args.scenario == "traffic_jam":
         scenario = UrbanTrafficJamScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
             global_cfg=global_cfg,
             scenario_cfg=scenario_cfg,
         )
-    elif args.zone == "urban" and args.scenario == "pedestrian_yield":
+    elif args.scenario == "pedestrian_yield":
         scenario = UrbanPedestrianYieldScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.scenario == "merge_judgement":
+        scenario = HighwayMergeJudgementScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.scenario == "yield_to_inside_vehicle":
+        scenario = RoundaboutYieldToInsideVehicleScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.scenario == "roundabout_merge":
+        scenario = RoundaboutMergeScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
             global_cfg=global_cfg,
@@ -96,6 +120,8 @@ def main():
         )
     else:
         raise ValueError(f"Unknown scenario: {args.zone}/{args.scenario}")
+
+    scenario.zone_name = zone_cfg.get("zone", args.zone)
 
     try:
         print("[DEBUG] running scenario")
