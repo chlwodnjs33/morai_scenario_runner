@@ -104,7 +104,7 @@ scenarios:
     npc_lead_candidate_count: 3
     lead_candidate_spacing_m: 25.0
     background_npc_min_dist_from_ego_m: 30.0
-    background_npc_max_dist_from_ego_m: 150.0
+    background_npc_max_dist_from_ego_m: 60.0
     npc_use_route: false
     npc_brake_front_only: true
     npc_min_spacing_m: 8.0
@@ -123,9 +123,9 @@ scenarios:
     min_follow_before_brake_sec: 2.0
     brake_after_min_sec: 3.0
     brake_after_max_sec: 5.0
-    brake_trigger_gap_m: 32.0
+    brake_trigger_gap_m: 50.0
     brake_trigger_ahead_min_m: 0.0
-    brake_trigger_lateral_max_m: 4.0
+    brake_trigger_lateral_max_m: 7.0
     npc_brake_decel_mps2: 2.5
     brake_min_target_speed_mps: 8.0
     brake_min_ego_speed_mps: 0.5
@@ -143,8 +143,8 @@ scenarios:
     constant_velocity: 60
     reset_ego_motion_on_start: true
     reset_ego_motion_wait_sec: 0.5
-    brake_same_link_only: true
-    brake_allow_next_link: true
+    brake_lane_group_filter: true
+    npc_near_ego_min_count: 5
   merge_judgement:
     start_link: A219BS010305
     end_link: A219BS010301

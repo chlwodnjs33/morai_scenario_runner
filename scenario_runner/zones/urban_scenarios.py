@@ -2150,10 +2150,18 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
             max_count = min_count
         npc_count = self.random.randint(min_count, max_count)
 
-        print(f"[UrbanSuddenBrake] spawning AI npc_count={npc_count}")
-        self.spawn_ai_npc_on_route(label="npc_brake_candidate_0", prefer_ahead=True)
+        near_count = min(npc_count, max(1, int(self.cfg.get("npc_near_ego_min_count", 5))))
 
-        for i in range(1, npc_count):
+        print(f"[UrbanSuddenBrake] spawning AI npc_count={npc_count} (near_ego={near_count})")
+        existing_xy = []
+        for i in range(near_count):
+            label = f"npc_brake_candidate_{i}"
+            if self.spawn_ai_npc_near_route(label, existing_xy, force_own_lane=(i == 0)):
+                existing_xy.append(self.npc_vehicles[-1]["last_xy"])
+            else:
+                print(f"[UrbanSuddenBrake] {label} spawn skipped")
+
+        for i in range(near_count, npc_count):
             if not self.spawn_random_ai_npc(label=f"npc_brake_candidate_{i}"):
                 print(f"[UrbanSuddenBrake] npc_brake_candidate_{i} spawn skipped")
 
@@ -2179,6 +2187,74 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
         if hasattr(self.grpc, "set_vehicle_speed_limit"):
             self.grpc.set_vehicle_speed_limit(npc, speed_limit, enabled=True)
         self.grpc.set_vehicle_ai(npc, True)
+
+    def find_route_link_at_s(self, target_s):
+        """route_links를 따라가다가 arc-length target_s가 속하는 (link_id, link 내부 offset)을 반환."""
+        accumulated = 0.0
+        for link_id in self.route_links:
+            link_len = polyline_length(self.map_loader.get_link_points(link_id))
+            if target_s <= accumulated + link_len:
+                return link_id, max(0.0, target_s - accumulated)
+            accumulated += link_len
+        return self.route_links[-1], 0.0
+
+    def spawn_ai_npc_near_route(self, label, existing_xy, force_own_lane=False):
+        """
+        ego 진행 경로를 따라 앞쪽 min~max 거리 범위 안에서, ego 링크 또는 좌우 인접 차로 중
+        하나를 골라 스폰한다. 여러 차로에 걸쳐 차량이 퍼져 있어야 앞차가 차선을 바꿔도
+        다른 차로의 NPC가 급정거 트리거를 이어받을 수 있다.
+        force_own_lane=True면 좌우 차로를 고려하지 않고 항상 ego 자신의 차로(base link)에 스폰한다
+        (ego와 같은 차선에 리드 차량이 반드시 있도록 보장하기 위함).
+        """
+        min_dist = float(self.cfg.get("background_npc_min_dist_from_ego_m", 20.0))
+        max_dist = float(self.cfg.get("background_npc_max_dist_from_ego_m", 80.0))
+        if max_dist < min_dist:
+            max_dist = min_dist
+
+        base_speed = float(self.cfg.get("npc_speed_mps", 12.0))
+        speed_jitter = float(self.cfg.get("npc_speed_jitter_mps", 0.0))
+        min_gap = float(self.cfg.get("npc_min_spacing_m", 8.0))
+        attempts = int(self.cfg.get("npc_near_route_spawn_attempts", 15))
+
+        for _ in range(attempts):
+            target_s = float(self.ego_spawn_offset_m) + self.random.uniform(min_dist, max_dist)
+            base_link_id, local_offset = self.find_route_link_at_s(target_s)
+
+            if force_own_lane:
+                link_id = base_link_id
+            else:
+                lane_links = list(self.map_loader.get_lane_group_link_ids(base_link_id))
+                link_id = self.random.choice(lane_links)
+
+            points = self.map_loader.get_link_points(link_id)
+            link_len = polyline_length(points)
+            if link_len < 4.0:
+                continue
+
+            offset = min(max(local_offset, 2.0), max(2.0, link_len - 2.0))
+            x, y, z, yaw = interpolate_on_polyline(points, offset)
+            if any(dist_xy(x, y, px, py) < min_gap for px, py in existing_xy):
+                continue
+
+            speed = max(0.5, base_speed + self.random.uniform(-speed_jitter, speed_jitter))
+            npc, model = self.spawn_vehicle_with_model_retry(
+                self.grpc.make_transform(x, y, z, yaw),
+                label,
+                speed,
+            )
+            if npc is None:
+                continue
+
+            self.configure_ai_npc(npc, speed)
+            self.register_npc(npc, label, model, x, y, speed, route_ok=False)
+            print(
+                f"[UrbanSuddenBrake] npc spawned label={label}, model={model}, "
+                f"link={link_id} (base={base_link_id}), route_s~={target_s:.1f}m, "
+                f"speed={speed:.1f}m/s"
+            )
+            return True
+
+        return False
 
     def spawn_ai_npc_on_route(self, label, prefer_ahead=False):
         base_speed = float(self.cfg.get("npc_speed_mps", 12.0))
@@ -2273,7 +2349,7 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
 
         return False
 
-    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg):
+    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg, ego_current_link=None):
         if not self.npc_vehicles:
             return None
 
@@ -2284,6 +2360,15 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
         front_only = bool(self.cfg.get("npc_brake_front_only", True))
         same_direction_only = bool(self.cfg.get("npc_brake_same_direction_only", True))
         heading_min_cos = float(self.cfg.get("npc_brake_heading_min_cos", 0.5))
+
+        lane_group_filter = bool(self.cfg.get("brake_lane_group_filter", False))
+        include_adjacent_lanes = bool(self.cfg.get("brake_lane_group_include_adjacent", False))
+        lane_group_links = None
+        if lane_group_filter and ego_current_link:
+            if include_adjacent_lanes:
+                lane_group_links = self.map_loader.get_lane_group_link_ids(str(ego_current_link))
+            else:
+                lane_group_links = {str(ego_current_link)}
 
         closest = None
         for npc_info in self.npc_vehicles:
@@ -2305,6 +2390,11 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
 
             npc_x = float(state.transform.location.x)
             npc_y = float(state.transform.location.y)
+            npc_current_link = ""
+            try:
+                npc_current_link = state.vehicle_state.current_link_info.id.value
+            except Exception:
+                npc_current_link = ""
             dx = npc_x - ego_x
             dy = npc_y - ego_y
             distance_m = math.hypot(dx, dy)
@@ -2326,10 +2416,13 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
                     "ahead_m": ahead_m,
                     "lateral_m": lateral_m,
                     "heading_cos": heading_cos,
+                    "current_link": npc_current_link,
                     "next_state_check_time": 0.0,
                 }
             )
 
+            if lane_group_links is not None and str(npc_current_link) not in lane_group_links:
+                continue
             if front_only and ahead_m < 0.0:
                 continue
             if same_direction_only and heading_cos < heading_min_cos:
@@ -2476,7 +2569,12 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
             current_s = max(getattr(self, "gt_bev_last_s", 0.0), current_s)
             self.gt_bev_last_s = current_s
             remaining_s = max(0.0, self.route_length_m - current_s)
-            target = self.update_npc_states(ego_x, ego_y, ego_state["yaw_deg"])
+            target = self.update_npc_states(
+                ego_x,
+                ego_y,
+                ego_state["yaw_deg"],
+                ego_current_link=ego_state.get("current_link"),
+            )
             self.maybe_update_brake_event(elapsed, ego_speed_mps, target)
 
             near_route_end = remaining_s <= arrival_stop_distance_m
@@ -3889,9 +3987,9 @@ class UrbanTrafficJamScenario(UrbanSuddenBrakeExpertScenario):
             npc_info["next_state_check_time"] = time.time() + 0.5
         print(f"[UrbanTrafficJam] jam GO vehicles={len(getattr(self, 'jam_npcs', []))}")
 
-    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg):
+    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg, ego_current_link=None):
         if self.brake_event.get("phase") != "stopped":
-            return super().update_npc_states(ego_x, ego_y, ego_yaw_deg)
+            return super().update_npc_states(ego_x, ego_y, ego_yaw_deg, ego_current_link=ego_current_link)
 
         yaw_rad = math.radians(ego_yaw_deg)
         forward_x = math.cos(yaw_rad)

@@ -64,6 +64,22 @@ scenarios:
   yield_to_inside_vehicle:
     start_link: A219BS010376
     end_link: A219BS010079
+    randomize_links: true
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_start_exclude_links_group: internal_links
+    random_route_end_exclude_links_group: internal_links
+    random_route_required_links_group: internal_links
+    random_route_attempts: 300
+    random_route_pool_enabled: true
+    random_recent_start_memory: 6
+    random_recent_route_memory: 12
+    random_min_route_length_m: 25.0
+    random_max_route_length_m: 700.0
+    random_max_route_links: 15
+    random_max_route_point_gap_m: 8.0
+    random_max_route_turn_deg: 60.0
+    route_setup_attempts: 5
     route_links:
       - A219BS010376
       - A219BS010480
@@ -139,6 +155,22 @@ scenarios:
   roundabout_merge:
     start_link: A219BS010376
     end_link: A219BS010079
+    randomize_links: true
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_start_exclude_links_group: internal_links
+    random_route_end_exclude_links_group: internal_links
+    random_route_required_links_group: internal_links
+    random_route_attempts: 300
+    random_route_pool_enabled: true
+    random_recent_start_memory: 6
+    random_recent_route_memory: 12
+    random_min_route_length_m: 25.0
+    random_max_route_length_m: 700.0
+    random_max_route_links: 15
+    random_max_route_point_gap_m: 8.0
+    random_max_route_turn_deg: 60.0
+    route_setup_attempts: 5
     route_links:
       - A219BS010376
       - A219BS010480
@@ -162,7 +194,7 @@ scenarios:
     drive_control_mode: gt_bev_external
     gt_bev_repo_path: third_party/GT_BEV
     gt_bev_map_name: R_KR_PG_KATRI
-    gt_bev_max_velocity_kmh: 35.0
+    gt_bev_max_velocity_kmh: 40.0
     gt_bev_traffic_light_control: false
     gt_bev_ros_remaps:
       - /ctrl_cmd:=/ctrl_cmd_0
@@ -195,7 +227,7 @@ scenarios:
       - A219BS010477
       - A219BS010478
     npc_count_min: 9
-    npc_count_max: 14
+    npc_count_max: 11
     npc_spawn_attempts: 40
     npc_spawn_retry_wait_sec: 0.05
     npc_route_failed_destroy_wait_sec: 0.2
@@ -209,10 +241,10 @@ scenarios:
     npc_route_min_length_m: 25.0
     npc_route_max_length_m: 450.0
     npc_route_max_links: 6
-    npc_entry_speed_min_mps: 5.0
-    npc_entry_speed_max_mps: 8.0
-    npc_internal_speed_min_mps: 3.0
-    npc_internal_speed_max_mps: 6.0
+    npc_entry_speed_min_mps: 6.0
+    npc_entry_speed_max_mps: 9.0
+    npc_internal_speed_min_mps: 4.0
+    npc_internal_speed_max_mps: 7.0
     npc_unique_route_templates: true
     npc_ai: true
     npc_vehicle_models:
@@ -222,111 +254,6 @@ scenarios:
       - 2016_Hyundai_Sonata
     npc_cleanup_arrival_distance_m: 8.0
     npc_cleanup_check_sec: 0.2
-    npc_route_templates:
-      - name: inside_exit_after_quarter
-        weight: 2.0
-        route_links:
-          - A219BS010479
-          - A219BS010480
-          - A219BS010380
-        start_links:
-          - A219BS010479
-          - A219BS010480
-        spawn_offset_min_m: 4.0
-        spawn_offset_max_m: 35.0
-        speed_min_mps: 3.0
-        speed_max_mps: 6.0
-      - name: inside_exit_after_half
-        weight: 2.0
-        route_links:
-          - A219BS010480
-          - A219BS010477
-          - A219BS010456
-        start_links:
-          - A219BS010480
-          - A219BS010477
-        spawn_offset_min_m: 4.0
-        spawn_offset_max_m: 35.0
-        speed_min_mps: 3.0
-        speed_max_mps: 6.0
-      - name: inside_exit_after_three_quarter
-        weight: 2.0
-        route_links:
-          - A219BS010477
-          - A219BS010478
-          - A219BS010079
-        start_links:
-          - A219BS010477
-          - A219BS010478
-        spawn_offset_min_m: 4.0
-        spawn_offset_max_m: 35.0
-        speed_min_mps: 3.0
-        speed_max_mps: 6.0
-      - name: inside_exit_full_turn
-        weight: 1.5
-        route_links:
-          - A219BS010478
-          - A219BS010479
-          - A219BS010379
-        start_links:
-          - A219BS010478
-          - A219BS010479
-        spawn_offset_min_m: 4.0
-        spawn_offset_max_m: 35.0
-        speed_min_mps: 3.0
-        speed_max_mps: 6.0
-      - name: west_entry_to_south_exit
-        weight: 1.5
-        route_links:
-          - A219BS010376
-          - A219BS010480
-          - A219BS010380
-        start_links:
-          - A219BS010376
-        spawn_offset_min_m: 3.0
-        spawn_offset_max_m: 25.0
-        speed_min_mps: 3.0
-        speed_max_mps: 5.5
-      - name: west_entry_to_east_exit
-        weight: 1.5
-        route_links:
-          - A219BS010376
-          - A219BS010480
-          - A219BS010477
-          - A219BS010456
-        start_links:
-          - A219BS010376
-        spawn_offset_min_m: 3.0
-        spawn_offset_max_m: 25.0
-        speed_min_mps: 3.0
-        speed_max_mps: 5.5
-      - name: south_entry_to_north_exit
-        weight: 1.5
-        route_links:
-          - A219BS010378
-          - A219BS010477
-          - A219BS010478
-          - A219BS010079
-        start_links:
-          - A219BS010378
-        spawn_offset_min_m: 3.0
-        spawn_offset_max_m: 25.0
-        speed_min_mps: 3.0
-        speed_max_mps: 5.5
-      - name: east_entry_to_west_exit
-        weight: 1.5
-        route_links:
-          - A219BS010377
-          - A219BS010478
-          - A219BS010479
-          - A219BS010379
-        start_links:
-          - A219BS010377
-        spawn_offset_min_m: 3.0
-        spawn_offset_max_m: 25.0
-        speed_min_mps: 3.0
-        speed_max_mps: 5.5
-
   enter_roundabout:
     enabled: false
     zone_links_path: scenario_runner/config/roundabout_links.yaml

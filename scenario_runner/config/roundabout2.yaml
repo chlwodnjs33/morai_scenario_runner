@@ -68,6 +68,22 @@ scenarios:
   yield_to_inside_vehicle:
     start_link: A219BS010073
     end_link: A219BS010442
+    randomize_links: true
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_start_exclude_links_group: ego_spawn_exclude_links
+    random_route_end_exclude_links_group: internal_links
+    random_route_required_links_group: internal_links
+    random_route_attempts: 300
+    random_route_pool_enabled: true
+    random_recent_start_memory: 6
+    random_recent_route_memory: 12
+    random_min_route_length_m: 25.0
+    random_max_route_length_m: 450.0
+    random_max_route_links: 10
+    random_max_route_point_gap_m: 8.0
+    random_max_route_turn_deg: 60.0
+    route_setup_attempts: 5
     route_links:
       - A219BS010073
       - A219BS010586
