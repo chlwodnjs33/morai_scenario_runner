@@ -4099,6 +4099,11 @@ class UrbanPedestrianYieldScenario(UrbanBasicDriveScenario):
         super().setup()
         self._load_crosswalk_spawn_info()
         self._reset_pedestrian_event()
+        if self.cfg.get("pedestrian_yield_stop_enabled", True):
+            try:
+                self.init_ros_ctrl_cmd_publisher()
+            except Exception as e:
+                print(f"[UrbanPedestrianYield] ROS brake override unavailable: {e}")
 
     def restart_to_start_and_drive(self):
         self._despawn_pedestrian()
@@ -4112,6 +4117,7 @@ class UrbanPedestrianYieldScenario(UrbanBasicDriveScenario):
         self.pedestrian_started_at = None
         self._pedestrian_speed = float(self.cfg.get("pedestrian_speed_mps", 1.2))
         self._pedestrian_model = None
+        self._pedestrian_stop_active = False
 
     def _route_projection_for_points(self, route_points, x, y):
         if len(route_points) < 2:
@@ -4438,6 +4444,43 @@ class UrbanPedestrianYieldScenario(UrbanBasicDriveScenario):
                 reason = "reached_dest" if reached else "timeout"
                 self._finish_pedestrian_crossing(reason, elapsed)
 
+    def _apply_pedestrian_yield_stop(self, current_s):
+        if not self.cfg.get("pedestrian_yield_stop_enabled", True):
+            return False
+
+        if getattr(self, "pedestrian_phase", "waiting") != "crossing":
+            self._pedestrian_stop_active = False
+            return False
+
+        crosswalk_s = float(self._crosswalk_spawn["route_s"])
+        remaining_to_crosswalk = crosswalk_s - float(current_s)
+        stop_distance = float(self.cfg.get("pedestrian_yield_stop_distance_m", 12.0))
+        pass_margin = float(self.cfg.get("pedestrian_yield_pass_margin_m", 2.0))
+
+        should_stop = -pass_margin <= remaining_to_crosswalk <= stop_distance
+        if not should_stop:
+            self._pedestrian_stop_active = False
+            return False
+
+        if not self._pedestrian_stop_active:
+            print(
+                f"[UrbanPedestrianYield] pedestrian yield STOP "
+                f"remaining_to_crosswalk={remaining_to_crosswalk:.1f}m"
+            )
+            self._pedestrian_stop_active = True
+
+        brake = float(self.cfg.get("pedestrian_yield_stop_brake", 1.0))
+        if hasattr(self, "ros_ctrl_cmd_pub"):
+            self.publish_ros_ctrl_cmd(
+                steer=0.0,
+                target_speed=0.0,
+                current_speed=0.0,
+                brake_override=brake,
+            )
+        elif hasattr(self.grpc, "stop_ego_control"):
+            self.grpc.stop_ego_control()
+        return True
+
     def cleanup(self):
         self._despawn_pedestrian()
         super().cleanup()
@@ -4487,6 +4530,7 @@ class UrbanPedestrianYieldScenario(UrbanBasicDriveScenario):
             remaining_s = max(0.0, self.route_length_m - current_s)
 
             self._update_pedestrian(ego_x, ego_y, current_s)
+            pedestrian_stop_active = self._apply_pedestrian_yield_stop(current_s)
 
             goal_reached = (
                 remaining_s <= arrival_stop_distance_m and cross_track_error <= max_cross_track_error_m
@@ -4503,7 +4547,7 @@ class UrbanPedestrianYieldScenario(UrbanBasicDriveScenario):
                     f"[UrbanPedestrianYield] lap={lap + 1} t={elapsed:.1f}s "
                     f"speed={ego_state['speed']:.1f}m/s link={current_link} "
                     f"s={current_s:.1f}/{self.route_length_m:.1f} "
-                    f"ped={self.pedestrian_phase} "
+                    f"ped={self.pedestrian_phase} stop={pedestrian_stop_active} "
                     f"cte={cross_track_error:.2f} remain={remaining_s:.1f}"
                 )
                 last_print_time = elapsed

@@ -223,7 +223,7 @@ scenarios:
     ego_spawn_offset_m: 5.0
     goal_offset_from_end_m: 3.0
     pedestrian_route_crosswalk_max_dist_m: 8.0
-    pedestrian_crosswalk_min_s_m: 20.0
+    pedestrian_crosswalk_min_s_m: 40.0
     pedestrian_crosswalk_end_margin_m: 20.0
     pedestrian_models:
       - Man1
@@ -232,7 +232,11 @@ scenarios:
       - Woman2
     pedestrian_label: pedestrian_yield_target
     pedestrian_sidewalk_offset_m: 1.5
-    pedestrian_trigger_dist_m: 18.0
+    pedestrian_trigger_dist_m: 30.0
+    pedestrian_yield_stop_enabled: false
+    pedestrian_yield_stop_distance_m: 25.0
+    pedestrian_yield_pass_margin_m: 0.0
+    pedestrian_yield_stop_brake: 1.0
     pedestrian_speed_mps: 3.0
     pedestrian_auto_speed_by_crosswalk: true
     pedestrian_target_crossing_sec: 7.0
@@ -242,7 +246,7 @@ scenarios:
     pedestrian_direction_check_sec: 0.8
     pedestrian_direction_check_min_move_m: 0.4
     pedestrian_max_crossing_sec: 25.0
-    pedestrian_despawn_after_crossing: false
+    pedestrian_despawn_after_crossing: true
     timeout_sec: 0.0
     goal_tolerance_m: 4.0
     complete_on_end_link: true
