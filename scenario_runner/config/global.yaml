@@ -1,5 +1,5 @@
 grpc:
-  host: 127.0.0.1
+  host: 172.19.0.1
   port: 7789
   client_key: scenario_runner
 morai:

@@ -17,7 +17,7 @@ class MoraiGrpcClient:
         grpc_cfg = global_cfg["grpc"]
         path_cfg = global_cfg["paths"]
 
-        self.host = grpc_cfg.get("host", "127.0.0.1")
+        self.host = grpc_cfg.get("host", "172.19.0.55")
         self.port = int(grpc_cfg.get("port", 7789))
         self.client_key = grpc_cfg.get("client_key", "scenario_runner")
         self.grpc_src = path_cfg["grpc_src"]
@@ -300,6 +300,26 @@ class MoraiGrpcClient:
 
     def stop_ego_control(self):
         return self.control_ego(steer=0.0, target_speed=0.0, brake=1.0, throttle=0.0)
+
+    def reset_ego_motion(self):
+        """Reset ego residual motion before starting a new route/lap."""
+        ok_cruise = self.stop_ego_cruise()
+        ok_control = self.stop_ego_control()
+
+        ok_velocity = False
+        try:
+            ego = self.get_ego()
+            if hasattr(ego, "set_velocity"):
+                ok_velocity = bool(ego.set_velocity(0.0))
+        except Exception as e:
+            print(f"[Ego] reset motion velocity warning: {e}")
+
+        ok = bool(ok_cruise or ok_control or ok_velocity)
+        print(
+            f"[Ego] reset_motion: {ok} "
+            f"(cruise={ok_cruise}, control={ok_control}, velocity={ok_velocity})"
+        )
+        return ok
 
     def set_ego_gear_drive(self):
         from proto.morai.actor.actor_enum_pb2 import GEAR_MODE_D

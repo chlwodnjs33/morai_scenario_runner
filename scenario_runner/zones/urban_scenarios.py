@@ -48,7 +48,7 @@ class UrbanBasicDriveScenario(BaseScenario):
         with open(path, "r") as f:
             data = yaml.safe_load(f)
 
-        zone_data = data.get(self.zone_name, {})
+        zone_data = data.get(self.cfg.get("zone_links_key", self.zone_name), {})
         route_links = zone_data.get("route_links", [])
         exclude_links = set(zone_data.get("exclude_links", []))
 
@@ -73,6 +73,56 @@ class UrbanBasicDriveScenario(BaseScenario):
         print(f"[UrbanBasicDrive] random link candidates={len(candidates)} from {path}")
         return candidates
 
+    def flatten_zone_link_group(self, value):
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            links = []
+            for item in value.values():
+                links.extend(self.flatten_zone_link_group(item))
+            return links
+        if isinstance(value, (list, tuple)):
+            links = []
+            for item in value:
+                links.extend(self.flatten_zone_link_group(item))
+            return links
+        return [str(value)]
+
+    def load_zone_link_group(self, group_name):
+        if not group_name:
+            return set()
+
+        path = self.cfg.get("zone_links_path", "scenario_runner/config/urban_links.yaml")
+        with open(path, "r") as f:
+            data = yaml.safe_load(f) or {}
+        zone_data = data.get(self.cfg.get("zone_links_key", self.zone_name), {})
+        return {
+            link_id
+            for link_id in self.flatten_zone_link_group(zone_data.get(group_name, []))
+            if link_id in self.map_loader.link_set
+        }
+
+    def route_satisfies_random_filters(self, start_link, end_link, route_links):
+        start_exclude_group = self.cfg.get("random_route_start_exclude_links_group")
+        if start_exclude_group:
+            excluded_starts = self.load_zone_link_group(start_exclude_group)
+            if start_link in excluded_starts:
+                return False, "start_excluded"
+
+        end_exclude_group = self.cfg.get("random_route_end_exclude_links_group")
+        if end_exclude_group:
+            excluded_ends = self.load_zone_link_group(end_exclude_group)
+            if end_link in excluded_ends:
+                return False, "end_excluded"
+
+        required_group = self.cfg.get("random_route_required_links_group")
+        if required_group:
+            required_links = self.load_zone_link_group(required_group)
+            if required_links and not any(link_id in required_links for link_id in route_links):
+                return False, "missing_required"
+
+        return True, ""
+
     def select_route_for_next_drive(self):
         if self.randomize_links:
             self.select_random_route()
@@ -91,6 +141,7 @@ class UrbanBasicDriveScenario(BaseScenario):
         max_length_m = float(self.cfg.get("random_max_route_length_m", 0.0))
         max_route_links = int(self.cfg.get("random_max_route_links", 0))
         max_route_point_gap_m = float(self.cfg.get("random_max_route_point_gap_m", 0.0))
+        max_route_turn_deg = float(self.cfg.get("random_max_route_turn_deg", 0.0))
         stay_in_zone = self.cfg.get("random_route_stay_in_zone", True)
         zone_link_set = self.zone_allowed_links
 
@@ -117,12 +168,21 @@ class UrbanBasicDriveScenario(BaseScenario):
                 continue
             if stay_in_zone and any(link_id not in zone_link_set for link_id in route_links):
                 continue
-            if max_route_point_gap_m > 0.0:
+            filters_ok, last_reject_reason = self.route_satisfies_random_filters(start_link, end_link, route_links)
+            if not filters_ok:
+                continue
+            if max_route_point_gap_m > 0.0 or max_route_turn_deg > 0.0:
                 route_points = self.build_route_points(route_links)
-                max_gap = self.max_route_point_gap(route_points)
-                if max_gap > max_route_point_gap_m:
-                    last_reject_reason = f"max route point gap {max_gap:.1f}m"
-                    continue
+                if max_route_point_gap_m > 0.0:
+                    max_gap = self.max_route_point_gap(route_points)
+                    if max_gap > max_route_point_gap_m:
+                        last_reject_reason = f"max route point gap {max_gap:.1f}m"
+                        continue
+                if max_route_turn_deg > 0.0:
+                    max_turn = self.max_route_point_turn_deg(route_points)
+                    if max_turn > max_route_turn_deg:
+                        last_reject_reason = f"max route point turn {max_turn:.1f}deg"
+                        continue
 
             self.start_link = start_link
             self.end_link = end_link
@@ -140,6 +200,7 @@ class UrbanBasicDriveScenario(BaseScenario):
         max_length_m = float(self.cfg.get("random_max_route_length_m", 0.0))
         max_route_links = int(self.cfg.get("random_max_route_links", 0))
         max_route_point_gap_m = float(self.cfg.get("random_max_route_point_gap_m", 0.0))
+        max_route_turn_deg = float(self.cfg.get("random_max_route_turn_deg", 0.0))
         stay_in_zone = self.cfg.get("random_route_stay_in_zone", True)
         zone_link_set = self.zone_allowed_links
 
@@ -151,6 +212,10 @@ class UrbanBasicDriveScenario(BaseScenario):
             "too_many_links": 0,
             "out_of_zone": 0,
             "gap": 0,
+            "turn": 0,
+            "start_excluded": 0,
+            "end_excluded": 0,
+            "missing_required": 0,
         }
 
         for start_link in self.zone_route_links:
@@ -180,11 +245,18 @@ class UrbanBasicDriveScenario(BaseScenario):
                 if stay_in_zone and any(link_id not in zone_link_set for link_id in route_links):
                     reject_counts["out_of_zone"] += 1
                     continue
+                filters_ok, reject_reason = self.route_satisfies_random_filters(start_link, end_link, route_links)
+                if not filters_ok:
+                    reject_counts[reject_reason] = reject_counts.get(reject_reason, 0) + 1
+                    continue
 
                 route_points = self.build_route_points(route_links)
                 max_gap = self.max_route_point_gap(route_points)
                 if max_route_point_gap_m > 0.0 and max_gap > max_route_point_gap_m:
                     reject_counts["gap"] += 1
+                    continue
+                if max_route_turn_deg > 0.0 and self.max_route_point_turn_deg(route_points) > max_route_turn_deg:
+                    reject_counts["turn"] += 1
                     continue
 
                 pool.append(
@@ -329,6 +401,29 @@ class UrbanBasicDriveScenario(BaseScenario):
             for p0, p1 in zip(points[:-1], points[1:])
         )
 
+    def max_route_point_turn_deg(self, points):
+        """
+        인접한 두 세그먼트 사이의 heading 변화(도) 중 최댓값.
+        build_route_points()가 링크 이음매에서 만드는 짧고 방향이 어긋난
+        세그먼트(실제 도로 형상과 무관한 이음매 아티팩트)를 걸러내기 위함.
+        """
+        if len(points) < 3:
+            return 0.0
+
+        max_turn = 0.0
+        prev_heading = None
+        for p0, p1 in zip(points[:-1], points[1:]):
+            dx = p1[0] - p0[0]
+            dy = p1[1] - p0[1]
+            if dx * dx + dy * dy < 1e-6:
+                continue
+            heading = math.degrees(math.atan2(dy, dx))
+            if prev_heading is not None:
+                turn = abs((heading - prev_heading + 180.0) % 360.0 - 180.0)
+                max_turn = max(max_turn, turn)
+            prev_heading = heading
+        return max_turn
+
     def dump_route_debug(self):
         debug_dir = self.cfg.get("route_debug_dir", "scenario_runner/debug_routes")
         os.makedirs(debug_dir, exist_ok=True)
@@ -398,7 +493,11 @@ class UrbanBasicDriveScenario(BaseScenario):
         self.route_setup_mode = None
 
         self.grpc.set_ego_transform(self.start_tf)
-        time.sleep(0.2)
+        if self.cfg.get("reset_ego_motion_on_start", False) and hasattr(self.grpc, "reset_ego_motion"):
+            self.grpc.reset_ego_motion()
+            time.sleep(float(self.cfg.get("reset_ego_motion_wait_sec", 0.5)))
+        else:
+            time.sleep(0.2)
 
         drive_control_mode = str(self.cfg.get("drive_control_mode", "morai_cruise")).lower()
         if drive_control_mode in ("gt_bev_expert", "gt_bev_external", "expert"):
@@ -1018,6 +1117,15 @@ class UrbanBasicDriveScenario(BaseScenario):
             current_s = max(getattr(self, "gt_bev_last_s", 0.0), current_s)
             self.gt_bev_last_s = current_s
             remaining_s = max(0.0, self.route_length_m - current_s)
+
+            tick_hook = getattr(self, "on_gt_bev_timeline_tick", None)
+            if tick_hook is not None:
+                tick_hook(
+                    elapsed=elapsed,
+                    ego_state=ego_state,
+                    current_s=current_s,
+                    remaining_s=remaining_s,
+                )
 
             near_route_end = remaining_s <= arrival_stop_distance_m
             route_end_reached = near_route_end and cross_track_error <= max_cross_track_error_m
@@ -2042,10 +2150,18 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
             max_count = min_count
         npc_count = self.random.randint(min_count, max_count)
 
-        print(f"[UrbanSuddenBrake] spawning AI npc_count={npc_count}")
-        self.spawn_ai_npc_on_route(label="npc_brake_candidate_0", prefer_ahead=True)
+        near_count = min(npc_count, max(1, int(self.cfg.get("npc_near_ego_min_count", 5))))
 
-        for i in range(1, npc_count):
+        print(f"[UrbanSuddenBrake] spawning AI npc_count={npc_count} (near_ego={near_count})")
+        existing_xy = []
+        for i in range(near_count):
+            label = f"npc_brake_candidate_{i}"
+            if self.spawn_ai_npc_near_route(label, existing_xy, force_own_lane=(i == 0)):
+                existing_xy.append(self.npc_vehicles[-1]["last_xy"])
+            else:
+                print(f"[UrbanSuddenBrake] {label} spawn skipped")
+
+        for i in range(near_count, npc_count):
             if not self.spawn_random_ai_npc(label=f"npc_brake_candidate_{i}"):
                 print(f"[UrbanSuddenBrake] npc_brake_candidate_{i} spawn skipped")
 
@@ -2071,6 +2187,76 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
         if hasattr(self.grpc, "set_vehicle_speed_limit"):
             self.grpc.set_vehicle_speed_limit(npc, speed_limit, enabled=True)
         self.grpc.set_vehicle_ai(npc, True)
+
+    def find_route_link_at_s(self, target_s, route_links=None):
+        """route_links를 따라가다가 arc-length target_s가 속하는 (link_id, link 내부 offset)을 반환."""
+        if route_links is None:
+            route_links = self.route_links
+        accumulated = 0.0
+        for link_id in route_links:
+            link_len = polyline_length(self.map_loader.get_link_points(link_id))
+            if target_s <= accumulated + link_len:
+                return link_id, max(0.0, target_s - accumulated)
+            accumulated += link_len
+        return route_links[-1], 0.0
+
+    def spawn_ai_npc_near_route(self, label, existing_xy, force_own_lane=False):
+        """
+        ego 진행 경로를 따라 앞쪽 min~max 거리 범위 안에서, ego 링크 또는 좌우 인접 차로 중
+        하나를 골라 스폰한다. 여러 차로에 걸쳐 차량이 퍼져 있어야 앞차가 차선을 바꿔도
+        다른 차로의 NPC가 급정거 트리거를 이어받을 수 있다.
+        force_own_lane=True면 좌우 차로를 고려하지 않고 항상 ego 자신의 차로(base link)에 스폰한다
+        (ego와 같은 차선에 리드 차량이 반드시 있도록 보장하기 위함).
+        """
+        min_dist = float(self.cfg.get("background_npc_min_dist_from_ego_m", 20.0))
+        max_dist = float(self.cfg.get("background_npc_max_dist_from_ego_m", 80.0))
+        if max_dist < min_dist:
+            max_dist = min_dist
+
+        base_speed = float(self.cfg.get("npc_speed_mps", 12.0))
+        speed_jitter = float(self.cfg.get("npc_speed_jitter_mps", 0.0))
+        min_gap = float(self.cfg.get("npc_min_spacing_m", 8.0))
+        attempts = int(self.cfg.get("npc_near_route_spawn_attempts", 15))
+
+        for _ in range(attempts):
+            target_s = float(self.ego_spawn_offset_m) + self.random.uniform(min_dist, max_dist)
+            base_link_id, local_offset = self.find_route_link_at_s(target_s)
+
+            if force_own_lane:
+                link_id = base_link_id
+            else:
+                lane_links = list(self.map_loader.get_lane_group_link_ids(base_link_id))
+                link_id = self.random.choice(lane_links)
+
+            points = self.map_loader.get_link_points(link_id)
+            link_len = polyline_length(points)
+            if link_len < 4.0:
+                continue
+
+            offset = min(max(local_offset, 2.0), max(2.0, link_len - 2.0))
+            x, y, z, yaw = interpolate_on_polyline(points, offset)
+            if any(dist_xy(x, y, px, py) < min_gap for px, py in existing_xy):
+                continue
+
+            speed = max(0.5, base_speed + self.random.uniform(-speed_jitter, speed_jitter))
+            npc, model = self.spawn_vehicle_with_model_retry(
+                self.grpc.make_transform(x, y, z, yaw),
+                label,
+                speed,
+            )
+            if npc is None:
+                continue
+
+            self.configure_ai_npc(npc, speed)
+            self.register_npc(npc, label, model, x, y, speed, route_ok=False)
+            print(
+                f"[UrbanSuddenBrake] npc spawned label={label}, model={model}, "
+                f"link={link_id} (base={base_link_id}), route_s~={target_s:.1f}m, "
+                f"speed={speed:.1f}m/s"
+            )
+            return True
+
+        return False
 
     def spawn_ai_npc_on_route(self, label, prefer_ahead=False):
         base_speed = float(self.cfg.get("npc_speed_mps", 12.0))
@@ -2165,7 +2351,7 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
 
         return False
 
-    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg):
+    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg, ego_current_link=None):
         if not self.npc_vehicles:
             return None
 
@@ -2176,6 +2362,15 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
         front_only = bool(self.cfg.get("npc_brake_front_only", True))
         same_direction_only = bool(self.cfg.get("npc_brake_same_direction_only", True))
         heading_min_cos = float(self.cfg.get("npc_brake_heading_min_cos", 0.5))
+
+        lane_group_filter = bool(self.cfg.get("brake_lane_group_filter", False))
+        include_adjacent_lanes = bool(self.cfg.get("brake_lane_group_include_adjacent", False))
+        lane_group_links = None
+        if lane_group_filter and ego_current_link:
+            if include_adjacent_lanes:
+                lane_group_links = self.map_loader.get_lane_group_link_ids(str(ego_current_link))
+            else:
+                lane_group_links = {str(ego_current_link)}
 
         closest = None
         for npc_info in self.npc_vehicles:
@@ -2197,6 +2392,11 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
 
             npc_x = float(state.transform.location.x)
             npc_y = float(state.transform.location.y)
+            npc_current_link = ""
+            try:
+                npc_current_link = state.vehicle_state.current_link_info.id.value
+            except Exception:
+                npc_current_link = ""
             dx = npc_x - ego_x
             dy = npc_y - ego_y
             distance_m = math.hypot(dx, dy)
@@ -2218,10 +2418,13 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
                     "ahead_m": ahead_m,
                     "lateral_m": lateral_m,
                     "heading_cos": heading_cos,
+                    "current_link": npc_current_link,
                     "next_state_check_time": 0.0,
                 }
             )
 
+            if lane_group_links is not None and str(npc_current_link) not in lane_group_links:
+                continue
             if front_only and ahead_m < 0.0:
                 continue
             if same_direction_only and heading_cos < heading_min_cos:
@@ -2368,7 +2571,12 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
             current_s = max(getattr(self, "gt_bev_last_s", 0.0), current_s)
             self.gt_bev_last_s = current_s
             remaining_s = max(0.0, self.route_length_m - current_s)
-            target = self.update_npc_states(ego_x, ego_y, ego_state["yaw_deg"])
+            target = self.update_npc_states(
+                ego_x,
+                ego_y,
+                ego_state["yaw_deg"],
+                ego_current_link=ego_state.get("current_link"),
+            )
             self.maybe_update_brake_event(elapsed, ego_speed_mps, target)
 
             near_route_end = remaining_s <= arrival_stop_distance_m
@@ -2445,6 +2653,1368 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
                 break
 
             time.sleep(check_period_sec)
+
+
+class HighwayMergeJudgementScenario(UrbanSuddenBrakeExpertScenario):
+    zone_name = "highway"
+    scenario_name = "merge_judgement"
+
+    def setup(self):
+        self.ego_spawn_offset_m = self.cfg.get("ego_spawn_offset_m", 5.0)
+        self.decision_range = self.cfg.get("decision_range_m", 30.0)
+
+        self.randomize_links = False
+        self.random = random.Random(self.cfg.get("random_seed"))
+        self.zone_allowed_links = set()
+        self.zone_route_links = []
+        self.route_configured = False
+        self.route_setup_mode = None
+        self.random_route_pool = None
+        self.recent_start_links = []
+        self.recent_route_keys = []
+        self.npc_vehicles = []
+        self.stopped_npc = None
+        self.merge_vehicle = None
+        self.merge_vehicles = []
+        self.merge_vehicle_info = None
+        self.merge_conflict_s = None
+
+        self.select_route_for_next_drive()
+        self.grpc.start_world(self.start_tf)
+        self.spawn_merge_vehicle()
+        self.prepare_merge_vehicle_release_trigger()
+        self.configure_drive_with_retries()
+
+    def select_route_for_next_drive(self):
+        route_options = self.cfg.get("ego_route_options")
+        if route_options:
+            option = self.random.choice(route_options)
+            route_links = list(option.get("route_links", []))
+            conflict_link = option.get("merge_conflict_link", self.cfg.get("merge_conflict_link"))
+        else:
+            route_links = list(self.cfg.get("route_links", []))
+            conflict_link = self.cfg.get("merge_conflict_link")
+
+        if len(route_links) < 2:
+            raise RuntimeError("merge_judgement requires at least two route_links")
+
+        self.start_link = route_links[0]
+        self.end_link = route_links[-1]
+        self.prepare_route(route_links=route_links, route_length_m=0.0)
+        self.merge_conflict_s = self.project_link_midpoint_on_ego_route(conflict_link)
+        if self.merge_conflict_s is not None:
+            print(f"[HighwayMerge] conflict_link={conflict_link} s={self.merge_conflict_s:.1f}m")
+
+    def restart_to_start_and_drive(self):
+        print("[HighwayMerge] restart to start")
+        self.stop_gt_bev_expert_controller()
+        self.select_route_for_next_drive()
+        self.grpc.restart_world(self.start_tf)
+        time.sleep(0.5)
+        self.npc_vehicles = []
+        self.stopped_npc = None
+        self.merge_vehicle = None
+        self.merge_vehicles = []
+        self.merge_vehicle_info = None
+        self.spawn_merge_vehicle()
+        self.prepare_merge_vehicle_release_trigger()
+        self.configure_drive_with_retries()
+
+    def project_link_midpoint_on_ego_route(self, link_id):
+        if not link_id or link_id not in self.map_loader.link_set:
+            return None
+        points = self.map_loader.get_link_points(link_id)
+        if not points:
+            return None
+        mid = points[len(points) // 2]
+        return project_distance_on_polyline(self.route_points, mid[0], mid[1])
+
+    def prepare_merge_vehicle_release_trigger(self):
+        """ego가 release_link(기본: 램프 첫 링크) 끝에 가까워지면 대기 중인 NPC 교통류를 풀어준다."""
+        release_link = self.cfg.get("merge_vehicle_release_link", self.route_links[0])
+        before_end_m = float(self.cfg.get("merge_vehicle_release_before_end_m", 20.0))
+
+        accumulated = 0.0
+        release_link_end_s = self.route_length_m
+        for link_id in self.route_links:
+            accumulated += polyline_length(self.map_loader.get_link_points(link_id))
+            if link_id == release_link:
+                release_link_end_s = accumulated
+                break
+
+        self.merge_vehicle_release_trigger_s = max(0.0, release_link_end_s - before_end_m)
+        self.merge_vehicles_released = False
+        print(
+            f"[HighwayMerge] merge vehicle release armed: release_link={release_link}, "
+            f"end_s={release_link_end_s:.1f}m, trigger_s={self.merge_vehicle_release_trigger_s:.1f}m"
+        )
+
+    def spawn_merge_vehicle(self):
+        route_links = list(self.cfg.get("merge_vehicle_route_links", []))
+        if len(route_links) < 2:
+            raise RuntimeError("merge_judgement requires merge_vehicle_route_links")
+
+        start_link = self.cfg.get("merge_vehicle_start_link", route_links[0])
+        route_points = self.build_route_points(route_links)
+        route_total_len = polyline_length(route_points)
+        speed = float(self.cfg.get("merge_vehicle_speed_mps", 12.0))
+        dest_link = route_links[-1]
+        lane_spread = bool(self.cfg.get("merge_vehicle_lane_spread", True))
+        min_gap = float(self.cfg.get("merge_vehicle_min_spacing_m", 6.0))
+        nudge_attempts = int(self.cfg.get("merge_vehicle_spawn_nudge_attempts", 6))
+        nudge_step_m = float(self.cfg.get("merge_vehicle_spawn_nudge_step_m", 5.0))
+
+        configured_offsets = self.cfg.get("merge_vehicle_spawn_offsets_m")
+        if configured_offsets:
+            spawn_offsets = [float(offset) for offset in configured_offsets]
+        else:
+            count_min = int(self.cfg.get("merge_vehicle_count_min", self.cfg.get("merge_vehicle_count", 1)))
+            count_max = int(self.cfg.get("merge_vehicle_count_max", count_min))
+            if count_max < count_min:
+                count_max = count_min
+            count = self.random.randint(count_min, count_max)
+            lanes_per_row = max(1, int(self.cfg.get("merge_vehicle_lanes_per_row", 3)))
+            cluster_start_offset_m = float(self.cfg.get("merge_vehicle_cluster_start_offset_m", 45.0))
+            cluster_row_spacing_m = float(self.cfg.get("merge_vehicle_cluster_row_spacing_m", 15.0))
+            spawn_offsets = [
+                cluster_start_offset_m + cluster_row_spacing_m * (i // lanes_per_row)
+                for i in range(count)
+            ]
+
+        self.merge_vehicles = []
+        self.merge_vehicle = None
+        self.merge_vehicle_info = None
+        spawned_positions = []
+
+        for i, raw_offset in enumerate(spawn_offsets):
+            link_id = None
+            vehicle_route_links = route_links
+            base_link_id = None
+            target_s = raw_offset
+            x = y = z = yaw = 0.0
+            spawn_offset = 0.0
+
+            for attempt in range(nudge_attempts):
+                target_s = min(max(0.0, raw_offset + nudge_step_m * attempt), max(0.0, route_total_len - 3.0))
+                base_link_id, local_offset = self.find_route_link_at_s(target_s, route_links=route_links)
+
+                candidate_link = base_link_id
+                candidate_route_links = route_links
+                if lane_spread:
+                    lane_links = list(self.map_loader.get_lane_group_link_ids(base_link_id))
+                    # 랜덤이 아니라 순서대로 돌려가며 배정해서 차로별로 고르게 퍼지게 한다
+                    chosen_link = lane_links[i % len(lane_links)]
+                    if chosen_link != base_link_id:
+                        try:
+                            lane_route, _ = build_route_between(self.map_loader, chosen_link, dest_link)
+                        except Exception:
+                            lane_route = []
+                        if len(lane_route) >= 2:
+                            candidate_link = chosen_link
+                            candidate_route_links = lane_route
+
+                points = self.map_loader.get_link_points(candidate_link)
+                link_len = polyline_length(points)
+                candidate_offset = min(max(local_offset, 2.0), max(2.0, link_len - 2.0))
+                cx, cy, cz, cyaw = interpolate_on_polyline(points, candidate_offset)
+
+                # 인접 차로 수가 lanes_per_row보다 적으면 같은 차로에 겹칠 수 있어 자리를 확인하고,
+                # 겹치면 조금씩 앞으로 밀어서(nudge) 다시 시도한다
+                if any(dist_xy(cx, cy, px, py) < min_gap for px, py in spawned_positions):
+                    continue
+
+                link_id = candidate_link
+                vehicle_route_links = candidate_route_links
+                x, y, z, yaw = cx, cy, cz, cyaw
+                spawn_offset = candidate_offset
+                break
+            else:
+                print(f"[HighwayMerge] npc_merge_{i} skipped: no clear spawn slot found near s={raw_offset:.1f}m")
+                continue
+
+            label = f"npc_merge_{i}"
+
+            npc, model = self.spawn_vehicle_with_model_retry(
+                self.grpc.make_transform(x, y, z, yaw),
+                label,
+                speed,
+            )
+            if npc is None:
+                print(f"[HighwayMerge] failed to spawn {label}")
+                continue
+
+            spawned_positions.append((x, y))
+
+            route_ok = self.grpc.set_vehicle_route(
+                npc,
+                vehicle_route_links,
+                decision_range=self.decision_range,
+                label=label,
+            )
+
+            if hasattr(self.grpc, "set_vehicle_speed_limit"):
+                self.grpc.set_vehicle_speed_limit(
+                    npc,
+                    float(self.cfg.get("merge_vehicle_speed_limit", speed)),
+                    enabled=True,
+                )
+            self.grpc.set_vehicle_velocity(npc, speed)
+            self.grpc.set_vehicle_ai(npc, bool(self.cfg.get("merge_vehicle_ai", True)))
+            # ego의 GT_BEV expert가 실제로 출발하기 전까지 정지시켜서, 준비 시간 동안
+            # NPC 교통류가 먼저 다 지나가버리는 것을 방지 (release_merge_vehicles에서 풀어줌)
+            npc.set_pause(bool(self.cfg.get("merge_vehicle_hold_until_release", True)))
+
+            print(
+                f"[HighwayMerge] npc spawned label={label}, lane_link={link_id} "
+                f"(base={base_link_id}), route_s~={target_s:.1f}m"
+            )
+
+            info = {
+                "actor": npc,
+                "label": label,
+                "model": model,
+                "route_links": vehicle_route_links,
+                "start_link": link_id,
+                "spawn_offset_m": spawn_offset,
+                "last_xy": (x, y),
+                "last_time": time.time(),
+                "speed_mps": 0.0,
+                "route_ok": route_ok,
+            }
+            self.merge_vehicles.append(info)
+            self.register_npc(npc, label, model, x, y, speed, route_ok=route_ok)
+
+            if self.merge_vehicle is None:
+                self.merge_vehicle = npc
+                self.merge_vehicle_info = info
+
+        if not self.merge_vehicles:
+            raise RuntimeError("Failed to spawn any merge NPC")
+
+    def release_merge_vehicles(self):
+        """
+        ego의 GT_BEV expert가 실제로 출발하는 시점에 맞춰 대기 중이던 NPC 교통류를 동시에 풀어준다.
+        set_pause(False)만으로는 속도가 0부터 서서히 올라가서 ego를 놓치므로,
+        속도/AI를 다시 명시적으로 걸어서 즉시 순항 속도로 복귀시킨다.
+        """
+        now = time.time()
+        speed = float(self.cfg.get("merge_vehicle_speed_mps", 12.0))
+        for info in self.merge_vehicles:
+            actor = info.get("actor")
+            if actor is None:
+                continue
+            actor.set_pause(False)
+            if hasattr(self.grpc, "set_vehicle_speed_limit"):
+                self.grpc.set_vehicle_speed_limit(
+                    actor,
+                    float(self.cfg.get("merge_vehicle_speed_limit", speed)),
+                    enabled=True,
+                )
+            self.grpc.set_vehicle_velocity(actor, speed)
+            self.grpc.set_vehicle_ai(actor, bool(self.cfg.get("merge_vehicle_ai", True)))
+            info["last_xy"] = info.get("last_xy", (0.0, 0.0))
+            info["last_time"] = now
+        print(f"[HighwayMerge] released {len(self.merge_vehicles)} merge NPC(s)")
+
+    def get_merge_vehicle_state(self):
+        candidates = self.merge_vehicles or ([self.merge_vehicle_info] if self.merge_vehicle_info else [])
+        best = None
+        for info in candidates:
+            if not info:
+                continue
+            actor = info.get("actor")
+            if actor is None:
+                continue
+            state = actor.get_actor_state()
+            if state is None:
+                continue
+            x = float(state.transform.location.x)
+            y = float(state.transform.location.y)
+            link_id = ""
+            try:
+                link_id = state.vehicle_state.current_link_info.id.value
+            except Exception:
+                link_id = ""
+            route_s = project_distance_on_polyline(self.route_points, x, y)
+            result = {
+                "x": x,
+                "y": y,
+                "link": link_id,
+                "s": route_s,
+                "label": info.get("label", "npc_merge"),
+            }
+            if best is None or result["s"] > best["s"]:
+                best = result
+        return best
+
+    def run_gt_bev_expert_timeline(self):
+        timeout_sec = self.cfg.get("timeout_sec", 0.0)
+        use_timeout = timeout_sec is not None and float(timeout_sec) > 0.0
+        goal_tolerance_m = float(self.cfg.get("goal_tolerance_m", 4.0))
+        check_period_sec = float(self.cfg.get("check_period_sec", 0.05))
+        max_cross_track_error_m = float(self.cfg.get("gt_bev_max_cross_track_error_m", 10.0))
+        arrival_stop_distance_m = float(
+            self.cfg.get("gt_bev_arrival_stop_distance_m", max(goal_tolerance_m, 6.0))
+        )
+        off_route_timeout_sec = float(self.cfg.get("off_route_timeout_sec", 3.0))
+        off_route_grace_sec = float(self.cfg.get("off_route_grace_sec", 2.0))
+        max_laps = int(self.cfg.get("max_laps", 1))
+        print_period_sec = float(self.cfg.get("print_period_sec", 1.0))
+        merge_observation_sec = float(self.cfg.get("merge_observation_sec", 12.0))
+        merge_complete_on_goal_only = bool(self.cfg.get("merge_complete_on_goal_only", False))
+
+        print(
+            f"[HighwayMerge] external GT_BEV expert running. "
+            f"arrival_stop={arrival_stop_distance_m}m, observation={merge_observation_sec}s"
+        )
+
+        lap = 0
+        lap_start_time = time.time()
+        last_print_time = 0.0
+        off_route_enter_time = None
+        observation_start_time = None
+        self.gt_bev_last_s = 0.0
+
+        while True:
+            elapsed = time.time() - lap_start_time
+            if not hasattr(self, "gt_bev_expert") or self.gt_bev_expert is None or not self.gt_bev_expert.is_running():
+                raise RuntimeError("GT_BEV expert process stopped unexpectedly")
+
+            ego_state = self.grpc.get_ego_motion_state()
+            ego_x = ego_state["x"]
+            ego_y = ego_state["y"]
+            ego_speed_mps = float(ego_state["speed"])
+            dist_to_goal = dist_xy(ego_x, ego_y, self.goal_x, self.goal_y)
+
+            current_s, _, _, cross_track_error = self.project_on_route_near_progress(
+                ego_x,
+                ego_y,
+                prev_s=getattr(self, "gt_bev_last_s", None),
+            )
+            current_s = max(getattr(self, "gt_bev_last_s", 0.0), current_s)
+            self.gt_bev_last_s = current_s
+            remaining_s = max(0.0, self.route_length_m - current_s)
+
+            if not self.merge_vehicles_released and current_s >= self.merge_vehicle_release_trigger_s:
+                self.release_merge_vehicles()
+                self.merge_vehicles_released = True
+
+            merge_state = self.get_merge_vehicle_state()
+            merge_gap = None
+            merge_dist = None
+            if merge_state is not None:
+                merge_gap = merge_state["s"] - current_s
+                merge_dist = dist_xy(ego_x, ego_y, merge_state["x"], merge_state["y"])
+
+            near_route_end = remaining_s <= arrival_stop_distance_m
+            route_end_reached = near_route_end and cross_track_error <= max_cross_track_error_m
+            goal_reached = route_end_reached or dist_to_goal <= goal_tolerance_m
+
+            if elapsed >= off_route_grace_sec and cross_track_error > max_cross_track_error_m:
+                if off_route_enter_time is None:
+                    off_route_enter_time = time.time()
+            else:
+                off_route_enter_time = None
+
+            if observation_start_time is None and self.merge_conflict_s is not None:
+                if current_s >= max(0.0, self.merge_conflict_s - 5.0):
+                    observation_start_time = time.time()
+                    print(f"[HighwayMerge] merge conflict observation started t={elapsed:.1f}s")
+
+            if elapsed - last_print_time >= print_period_sec:
+                merge_msg = "none"
+                if merge_state is not None:
+                    merge_msg = (
+                        f"link={merge_state['link']} s={merge_state['s']:.1f} "
+                        f"gap={merge_gap:.1f}m dist={merge_dist:.1f}m"
+                    )
+                print(
+                    f"[HighwayMerge] lap={lap + 1} t={elapsed:.1f}s "
+                    f"ego_speed={ego_speed_mps:.1f}m/s "
+                    f"s={current_s:.1f}/{self.route_length_m:.1f} "
+                    f"cte={cross_track_error:.2f} remain={remaining_s:.1f} merge={merge_msg}"
+                )
+                last_print_time = elapsed
+
+            if (
+                not merge_complete_on_goal_only
+                and observation_start_time is not None
+                and time.time() - observation_start_time >= merge_observation_sec
+            ):
+                print(f"[HighwayMerge] scenario complete after merge observation t={elapsed:.1f}s")
+                self.stop_pure_pursuit_control()
+                break
+
+            if (
+                off_route_enter_time is not None
+                and time.time() - off_route_enter_time >= off_route_timeout_sec
+            ):
+                print(
+                    f"[HighwayMerge] OFF ROUTE - restart "
+                    f"cte={cross_track_error:.2f}m, link={ego_state['current_link']}, elapsed={elapsed:.1f}s"
+                )
+                self.stop_pure_pursuit_control()
+                self.restart_to_start_and_drive()
+                lap_start_time = time.time()
+                last_print_time = 0.0
+                off_route_enter_time = None
+                observation_start_time = None
+                self.gt_bev_last_s = 0.0
+                continue
+
+            if goal_reached:
+                lap += 1
+                print(
+                    f"[HighwayMerge] GOAL REACHED lap={lap}, "
+                    f"dist={dist_to_goal:.2f}m, s={current_s:.1f}/{self.route_length_m:.1f}, "
+                    f"elapsed={elapsed:.1f}s"
+                )
+                self.stop_pure_pursuit_control()
+
+                if max_laps > 0 and lap >= max_laps:
+                    print("[HighwayMerge] max_laps reached. finish scenario.")
+                    break
+
+                self.restart_to_start_and_drive()
+                lap_start_time = time.time()
+                last_print_time = 0.0
+                off_route_enter_time = None
+                observation_start_time = None
+                self.gt_bev_last_s = 0.0
+                continue
+
+            if use_timeout and elapsed >= float(timeout_sec):
+                print(
+                    f"[HighwayMerge] TIMEOUT lap={lap + 1}, "
+                    f"dist={dist_to_goal:.2f}m, elapsed={elapsed:.1f}s"
+                )
+                self.stop_pure_pursuit_control()
+                break
+
+            time.sleep(check_period_sec)
+
+
+class RoundaboutYieldToInsideVehicleScenario(UrbanBasicDriveScenario):
+    zone_name = "roundabout"
+    scenario_name = "yield_to_inside_vehicle"
+
+    def setup(self):
+        self.ego_spawn_offset_m = self.cfg.get("ego_spawn_offset_m", 5.0)
+        self.decision_range = self.cfg.get("decision_range_m", 30.0)
+
+        self.randomize_links = self.cfg.get("randomize_links", False)
+        self.random = random.Random(self.cfg.get("random_seed"))
+        self.zone_allowed_links = set()
+        self.zone_route_links = self.load_zone_route_links()
+        self.route_configured = False
+        self.route_setup_mode = None
+        self.random_route_pool = None
+        self.recent_start_links = []
+        self.recent_route_keys = []
+        self.npc_vehicles = []
+        self.roundabout_inside_vehicle = None
+        self.last_roundabout_entry_route = None
+
+        self.select_route_for_next_drive()
+        self.grpc.start_world(self.start_tf)
+        self.spawn_inside_roundabout_vehicle()
+        self.configure_drive_with_retries()
+
+    def select_route_for_next_drive(self):
+        if self.randomize_links:
+            self.select_random_route()
+            return
+
+        entry_routes = [
+            list(route)
+            for route in self.cfg.get("ego_entry_routes", [])
+            if len(route) >= 2
+        ]
+        if entry_routes:
+            candidates = entry_routes
+            if self.last_roundabout_entry_route is not None and len(entry_routes) > 1:
+                last_key = tuple(self.last_roundabout_entry_route)
+                candidates = [route for route in entry_routes if tuple(route) != last_key]
+
+            route_links = list(self.random.choice(candidates))
+            self.last_roundabout_entry_route = route_links
+            self.start_link = route_links[0]
+            self.end_link = route_links[-1]
+            self.prepare_route(route_links=route_links, route_length_m=0.0)
+            print(
+                f"[RoundaboutYield] selected ego entry route "
+                f"start={self.start_link}, end={self.end_link}, links={len(route_links)}"
+            )
+            return
+
+        route_links = list(self.cfg.get("route_links", []))
+        if route_links:
+            self.start_link = self.cfg.get("start_link", route_links[0])
+            self.end_link = self.cfg.get("end_link", route_links[-1])
+            self.prepare_route(route_links=route_links, route_length_m=0.0)
+            return
+
+        self.start_link = self.cfg["start_link"]
+        self.end_link = self.cfg["end_link"]
+        self.prepare_route()
+
+    def restart_to_start_and_drive(self):
+        print("[RoundaboutYield] restart ego with new random entry route; keep inside NPCs running")
+        self.stop_gt_bev_expert_controller()
+        self.select_route_for_next_drive()
+        time.sleep(0.2)
+        self.configure_drive_with_retries()
+
+    def get_npc_vehicle_models(self):
+        configured = self.cfg.get("npc_vehicle_models")
+        if configured is None:
+            configured = [self.cfg.get("npc_vehicle_model", "2014_Kia_K7")]
+
+        available = []
+        if hasattr(self.grpc, "get_available_surround_vehicle_models"):
+            available = self.grpc.get_available_surround_vehicle_models()
+
+        if not available:
+            return list(configured)
+
+        configured_available = [model for model in configured if model in available]
+        if configured_available:
+            return configured_available
+
+        sampled = list(available)
+        self.random.shuffle(sampled)
+        return sampled[: min(8, len(sampled))]
+
+    def spawn_vehicle_with_model_retry(self, transform, label, velocity):
+        models = self.get_npc_vehicle_models()
+        self.random.shuffle(models)
+
+        for model in models:
+            npc = self.grpc.spawn_vehicle(
+                transform=transform,
+                model_name=model,
+                label=label,
+                velocity=velocity,
+                multi_ego=False,
+            )
+            if npc is not None:
+                return npc, model
+
+        return None, None
+
+    def register_roundabout_npc(self, npc, label, model, x, y, speed, route_ok=False):
+        npc_info = {
+            "label": label,
+            "actor": npc,
+            "model": model,
+            "last_xy": (x, y),
+            "last_time": time.time(),
+            "speed_mps": 0.0,
+            "route_ok": route_ok,
+            "initial_speed_mps": speed,
+        }
+        self.npc_vehicles.append(npc_info)
+        return npc_info
+
+    def route_from_roundabout_start_link(self, base_route_links, start_link, laps=1):
+        if start_link not in base_route_links:
+            return list(base_route_links)
+
+        start_idx = base_route_links.index(start_link)
+        rotated = list(base_route_links[start_idx:]) + list(base_route_links[:start_idx])
+        route_links = []
+        for _ in range(max(1, int(laps))):
+            route_links.extend(rotated)
+        route_links.append(rotated[0])
+        return route_links
+
+    def spawn_inside_roundabout_vehicle(self):
+        base_route_links = list(self.cfg.get("inside_vehicle_route_links", []))
+        if len(base_route_links) < 2:
+            raise RuntimeError("yield_to_inside_vehicle requires inside_vehicle_route_links")
+
+        speed = float(self.cfg.get("inside_vehicle_speed_mps", self.cfg.get("npc_speed_mps", 5.0)))
+        speed_limit = float(self.cfg.get("inside_vehicle_speed_limit", speed))
+        route_laps = int(self.cfg.get("inside_vehicle_route_laps", 1))
+        count = max(1, int(self.cfg.get("inside_vehicle_count", 1)))
+        min_spacing = float(self.cfg.get("inside_vehicle_min_spacing_m", 12.0))
+        random_phase = bool(self.cfg.get("inside_vehicle_spawn_phase_random", True))
+        inside_ai = bool(self.cfg.get("inside_vehicle_ai", True))
+        base_label = self.cfg.get("inside_vehicle_label", "npc_roundabout_inside")
+
+        link_segments = []
+        total_loop_length = 0.0
+        for link_id in base_route_links:
+            points = self.map_loader.get_link_points(link_id)
+            link_length = polyline_length(points)
+            if link_length <= 0.0:
+                continue
+            link_segments.append((link_id, points, total_loop_length, total_loop_length + link_length))
+            total_loop_length += link_length
+
+        if not link_segments:
+            raise RuntimeError("yield_to_inside_vehicle has no valid inside loop links")
+
+        spacing = total_loop_length / float(count)
+        if spacing < min_spacing:
+            print(
+                f"[RoundaboutYield] inside npc spacing warning: "
+                f"loop_length={total_loop_length:.1f}m, count={count}, "
+                f"spacing={spacing:.1f}m < min_spacing={min_spacing:.1f}m"
+            )
+
+        phase = self.random.uniform(0.0, spacing) if random_phase and spacing > 0.0 else 0.0
+
+        def sample_loop(loop_s):
+            s = loop_s % total_loop_length
+            for link_id, points, start_s, end_s in link_segments:
+                if s <= end_s:
+                    local_s = max(0.0, min(s - start_s, end_s - start_s))
+                    x, y, z, yaw = interpolate_on_polyline(points, local_s)
+                    return link_id, local_s, x, y, z, yaw
+            link_id, points, start_s, end_s = link_segments[-1]
+            x, y, z, yaw = interpolate_on_polyline(points, end_s - start_s)
+            return link_id, end_s - start_s, x, y, z, yaw
+
+        spawned = 0
+        for idx in range(count):
+            loop_s = phase + spacing * idx
+            start_link, spawn_offset, x, y, z, yaw = sample_loop(loop_s)
+            route_links = self.route_from_roundabout_start_link(base_route_links, start_link, route_laps)
+            if len(route_links) < 2:
+                print(f"[RoundaboutYield] skip inside npc start_link={start_link}; route too short")
+                continue
+
+            label = f"{base_label}_{idx}"
+            npc, model = self.spawn_vehicle_with_model_retry(
+                self.grpc.make_transform(x, y, z, yaw),
+                label,
+                speed,
+            )
+            if npc is None:
+                print(f"[RoundaboutYield] failed to spawn inside npc label={label}")
+                continue
+
+            route_ok = self.grpc.set_vehicle_route(
+                npc,
+                route_links,
+                decision_range=self.decision_range,
+                label=label,
+            )
+            npc.set_pause(False)
+            if hasattr(self.grpc, "set_vehicle_speed_limit"):
+                self.grpc.set_vehicle_speed_limit(npc, speed_limit, enabled=True)
+            self.grpc.set_vehicle_velocity(npc, speed)
+            self.grpc.set_vehicle_ai(npc, inside_ai)
+
+            if self.roundabout_inside_vehicle is None:
+                self.roundabout_inside_vehicle = npc
+            self.register_roundabout_npc(npc, label, model, x, y, speed, route_ok=route_ok)
+            spawned += 1
+            print(
+                f"[RoundaboutYield] inside npc spawned label={label}, model={model}, "
+                f"start_link={start_link}, offset={spawn_offset:.1f}m, loop_s={loop_s % total_loop_length:.1f}m, "
+                f"route={route_ok}, speed={speed:.1f}m/s"
+            )
+
+        if spawned == 0:
+            raise RuntimeError("Failed to spawn roundabout inside NPC")
+
+
+class RoundaboutMergeScenario(RoundaboutYieldToInsideVehicleScenario):
+    zone_name = "roundabout"
+    scenario_name = "roundabout_merge"
+
+    def setup(self):
+        self.ego_spawn_offset_m = self.cfg.get("ego_spawn_offset_m", 5.0)
+        self.decision_range = self.cfg.get("decision_range_m", 30.0)
+
+        self.randomize_links = self.cfg.get("randomize_links", False)
+        self.random = random.Random(self.cfg.get("random_seed"))
+        self.zone_allowed_links = set()
+        self.zone_route_links = self.load_zone_route_links()
+        self.route_configured = False
+        self.route_setup_mode = None
+        self.random_route_pool = None
+        self.recent_start_links = []
+        self.recent_route_keys = []
+        self.npc_vehicles = []
+        self.roundabout_inside_vehicle = None
+        self.last_roundabout_entry_route = None
+
+        self.select_route_for_next_drive()
+        self.prepare_roundabout_merge_npc_trigger()
+        self.grpc.start_world(self.start_tf)
+        self.configure_drive_with_retries()
+
+    def restart_to_start_and_drive(self):
+        print("[RoundaboutMerge] restart ego; keep roundabout NPC traffic running")
+        self.stop_gt_bev_expert_controller()
+        self.select_route_for_next_drive()
+        self.prepare_roundabout_merge_npc_trigger()
+        time.sleep(0.2)
+        self.configure_drive_with_retries()
+
+    def prepare_roundabout_merge_npc_trigger(self):
+        trigger_links = list(
+            self.cfg.get(
+                "npc_spawn_trigger_links",
+                ["A219BS010480", "A219BS010477", "A219BS010478"],
+            )
+        )
+        trigger_distance_m = float(self.cfg.get("npc_spawn_before_roundabout_m", 25.0))
+        self.roundabout_merge_npc_trigger_links = {str(link_id) for link_id in trigger_links}
+
+        entry_s = self.route_length_m
+        accumulated = 0.0
+        found_link = None
+        for link_id in self.route_links:
+            if link_id in trigger_links:
+                entry_s = accumulated
+                found_link = link_id
+                break
+            accumulated += polyline_length(self.map_loader.get_link_points(link_id))
+
+        self.roundabout_merge_npc_spawn_entry_s = entry_s
+        self.roundabout_merge_npc_spawn_trigger_s = max(0.0, entry_s - trigger_distance_m)
+        if not hasattr(self, "last_npc_topup_time"):
+            self.last_npc_topup_time = 0.0
+        if not hasattr(self, "last_npc_cleanup_time"):
+            self.last_npc_cleanup_time = 0.0
+        print(
+            f"[RoundaboutMerge] npc spawn armed: trigger_link={found_link}, "
+            f"entry_s={entry_s:.1f}m, trigger_s={self.roundabout_merge_npc_spawn_trigger_s:.1f}m, "
+            f"before={trigger_distance_m:.1f}m"
+        )
+
+    def distance_to_link_polyline(self, x, y, link_id):
+        points = self.map_loader.get_link_points(link_id)
+        if len(points) < 2:
+            return float("inf")
+
+        best_dist = float("inf")
+        for p0, p1 in zip(points[:-1], points[1:]):
+            dx = p1[0] - p0[0]
+            dy = p1[1] - p0[1]
+            seg_len_sq = dx * dx + dy * dy
+            if seg_len_sq < 1e-9:
+                continue
+            t = ((x - p0[0]) * dx + (y - p0[1]) * dy) / seg_len_sq
+            t = max(0.0, min(1.0, t))
+            proj_x = p0[0] + t * dx
+            proj_y = p0[1] + t * dy
+            best_dist = min(best_dist, dist_xy(x, y, proj_x, proj_y))
+        return best_dist
+
+    def distance_to_roundabout_trigger_links(self, x, y):
+        trigger_links = getattr(self, "roundabout_merge_npc_trigger_links", set())
+        best_dist = float("inf")
+        best_link = None
+        for link_id in trigger_links:
+            if link_id not in self.map_loader.link_set:
+                continue
+            distance_m = self.distance_to_link_polyline(x, y, link_id)
+            if distance_m < best_dist:
+                best_dist = distance_m
+                best_link = link_id
+        return best_dist, best_link
+
+    def clear_roundabout_npcs(self):
+        for npc_info in getattr(self, "npc_vehicles", []):
+            actor = npc_info.get("actor")
+            if actor is not None and hasattr(actor, "destroy"):
+                try:
+                    actor.destroy()
+                except Exception as e:
+                    print(f"[RoundaboutMerge] npc destroy failed label={npc_info.get('label')}: {e}")
+        self.npc_vehicles = []
+        self.roundabout_inside_vehicle = None
+
+    def cleanup(self):
+        super().cleanup()
+        self.clear_roundabout_npcs()
+
+    def weighted_choice(self, items):
+        total = sum(max(0.0, float(item.get("weight", 1.0))) for item in items)
+        if total <= 0.0:
+            return self.random.choice(items)
+
+        pick = self.random.uniform(0.0, total)
+        acc = 0.0
+        for item in items:
+            acc += max(0.0, float(item.get("weight", 1.0)))
+            if pick <= acc:
+                return item
+        return items[-1]
+
+    def build_npc_route_from_template(self, template, start_link):
+        route_links = list(template.get("route_links", []))
+        if len(route_links) < 2:
+            return []
+
+        if bool(template.get("circular", False)):
+            laps = int(template.get("route_laps", self.cfg.get("npc_route_laps", 1)))
+            return self.route_from_roundabout_start_link(route_links, start_link, laps)
+
+        if start_link in route_links:
+            return route_links[route_links.index(start_link):]
+        return route_links
+
+    def load_roundabout_link_groups(self):
+        path = self.cfg.get("zone_links_path", "scenario_runner/config/roundabout_links.yaml")
+        with open(path, "r") as f:
+            data = yaml.safe_load(f) or {}
+        zone_links_key = self.cfg.get("zone_links_key", self.zone_name)
+        return data.get(zone_links_key, {})
+
+    def flatten_link_group(self, value):
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            links = []
+            for item in value.values():
+                links.extend(self.flatten_link_group(item))
+            return links
+        if isinstance(value, (list, tuple)):
+            links = []
+            for item in value:
+                links.extend(self.flatten_link_group(item))
+            return links
+        return [str(value)]
+
+    def unique_valid_links(self, links):
+        valid = []
+        for link_id in links:
+            link_id = str(link_id)
+            if link_id in self.map_loader.link_set and link_id not in valid:
+                valid.append(link_id)
+        return valid
+
+    def setup_roundabout_dynamic_npc_routes(self):
+        groups = self.load_roundabout_link_groups()
+        self.roundabout_route_allowed_links = set(
+            self.unique_valid_links(groups.get("route_links", []))
+        )
+        self.roundabout_internal_links = self.unique_valid_links(
+            self.cfg.get("npc_internal_links", self.flatten_link_group(groups.get("internal_links", [])))
+        )
+        self.roundabout_entry_links = self.unique_valid_links(
+            self.cfg.get("npc_entry_links", self.flatten_link_group(groups.get("entry_links", [])))
+        )
+        self.roundabout_exit_links = self.unique_valid_links(
+            self.cfg.get("npc_exit_links", self.flatten_link_group(groups.get("exit_links", [])))
+        )
+        self.roundabout_dynamic_route_cache = {}
+        print(
+            f"[RoundaboutMerge] dynamic npc route pools: "
+            f"entry={len(self.roundabout_entry_links)}, internal={len(self.roundabout_internal_links)}, "
+            f"exit={len(self.roundabout_exit_links)}, allowed={len(self.roundabout_route_allowed_links)}"
+        )
+
+    def ego_route_avoid_links_for_npc(self):
+        avoid = {str(getattr(self, "start_link", ""))}
+        ahead_count = int(self.cfg.get("npc_avoid_ego_ahead_link_count", 2))
+        for link_id in list(getattr(self, "route_links", []))[: max(1, ahead_count + 1)]:
+            avoid.add(str(link_id))
+        return {link_id for link_id in avoid if link_id}
+
+    def choose_dynamic_npc_end_link(self, used_end_links):
+        exits = [link for link in self.roundabout_exit_links if link in self.map_loader.link_set]
+        if not exits:
+            return None
+
+        unused = [link for link in exits if link not in used_end_links]
+        pool = unused if unused else exits
+        return self.random.choice(pool)
+
+    def build_dynamic_npc_route(self, start_link, end_link):
+        cache_key = (start_link, end_link)
+        if cache_key in getattr(self, "roundabout_dynamic_route_cache", {}):
+            return self.roundabout_dynamic_route_cache[cache_key]
+
+        try:
+            route_links, route_length_m = build_route_between(self.map_loader, start_link, end_link)
+        except Exception:
+            result = ([], 0.0)
+            self.roundabout_dynamic_route_cache[cache_key] = result
+            return result
+
+        if len(route_links) < 2:
+            result = ([], 0.0)
+            self.roundabout_dynamic_route_cache[cache_key] = result
+            return result
+
+        allowed_links = set(getattr(self, "roundabout_route_allowed_links", set()))
+        if allowed_links and any(link_id not in allowed_links for link_id in route_links):
+            result = ([], 0.0)
+            self.roundabout_dynamic_route_cache[cache_key] = result
+            return result
+
+        min_length_m = float(self.cfg.get("npc_route_min_length_m", 25.0))
+        max_length_m = float(self.cfg.get("npc_route_max_length_m", 180.0))
+        if route_length_m < min_length_m or route_length_m > max_length_m:
+            result = ([], 0.0)
+            self.roundabout_dynamic_route_cache[cache_key] = result
+            return result
+
+        max_links = int(self.cfg.get("npc_route_max_links", 8))
+        if max_links > 0 and len(route_links) > max_links:
+            result = ([], 0.0)
+            self.roundabout_dynamic_route_cache[cache_key] = result
+            return result
+
+        result = (route_links, route_length_m)
+        self.roundabout_dynamic_route_cache[cache_key] = result
+        return result
+
+    def build_dynamic_npc_route_candidates(self):
+        starts = self.unique_valid_links(self.roundabout_internal_links + self.roundabout_entry_links)
+        exits = self.unique_valid_links(self.roundabout_exit_links)
+        candidates = []
+        for start_link in starts:
+            for end_link in exits:
+                if start_link == end_link:
+                    continue
+                route_links, route_length_m = self.build_dynamic_npc_route(start_link, end_link)
+                if not route_links:
+                    continue
+                candidates.append(
+                    {
+                        "start_link": start_link,
+                        "end_link": end_link,
+                        "route_links": route_links,
+                        "route_length_m": route_length_m,
+                    }
+                )
+        self.random.shuffle(candidates)
+        print(f"[RoundaboutMerge] dynamic npc valid route candidates={len(candidates)}")
+        return candidates
+
+    def choose_dynamic_npc_speed(self, start_link):
+        if start_link in getattr(self, "roundabout_internal_links", []):
+            speed_min = float(self.cfg.get("npc_internal_speed_min_mps", 2.0))
+            speed_max = float(self.cfg.get("npc_internal_speed_max_mps", 4.0))
+        else:
+            speed_min = float(self.cfg.get("npc_entry_speed_min_mps", self.cfg.get("npc_speed_min_mps", 3.0)))
+            speed_max = float(self.cfg.get("npc_entry_speed_max_mps", self.cfg.get("npc_speed_max_mps", 6.0)))
+        if speed_max < speed_min:
+            speed_max = speed_min
+        return self.random.uniform(speed_min, speed_max)
+
+    def choose_dynamic_npc_candidate(self, spawned_positions, used_start_links, used_end_links, route_candidates):
+        min_spacing = float(self.cfg.get("npc_spawn_min_spacing_m", 10.0))
+        min_link_spacing = float(self.cfg.get("npc_spawn_min_link_spacing_m", min_spacing))
+        attempts = int(self.cfg.get("npc_dynamic_route_attempts", self.cfg.get("npc_spawn_attempts", 40)))
+        avoid_links = self.ego_route_avoid_links_for_npc()
+
+        candidates = [
+            candidate
+            for candidate in route_candidates
+            if candidate["start_link"] not in avoid_links
+        ]
+        if not candidates:
+            return None
+
+        internal_probability = float(self.cfg.get("npc_internal_spawn_probability", 0.45))
+        internal_links = set(getattr(self, "roundabout_internal_links", []))
+        if internal_links:
+            if self.random.random() < internal_probability:
+                category_candidates = [c for c in candidates if c["start_link"] in internal_links]
+            else:
+                category_candidates = [c for c in candidates if c["start_link"] not in internal_links]
+            if category_candidates:
+                candidates = category_candidates
+
+        self.random.shuffle(candidates)
+        candidates.sort(key=lambda item: used_end_links.get(item["end_link"], 0))
+
+        for candidate in candidates[:attempts]:
+            start_link = candidate["start_link"]
+            route_links = candidate["route_links"]
+            route_length_m = candidate["route_length_m"]
+
+            pose_attempts = int(self.cfg.get("npc_spawn_pose_attempts_per_route", 5))
+            pose = None
+            for _ in range(max(1, pose_attempts)):
+                candidate_pose = self.choose_spawn_pose_for_template({}, start_link)
+                if candidate_pose is None:
+                    continue
+                _, x, y, _, _ = candidate_pose
+                if any(dist_xy(x, y, px, py) < min_spacing for px, py in spawned_positions):
+                    continue
+                if any(
+                    link_id == start_link and dist_xy(x, y, px, py) < min_link_spacing
+                    for link_id, px, py in used_start_links.values()
+                ):
+                    continue
+                pose = candidate_pose
+                break
+            if pose is None:
+                continue
+
+            spawn_offset, x, y, z, yaw = pose
+
+            return {
+                "name": "dynamic_roundabout_route",
+                "start_link": start_link,
+                "end_link": candidate["end_link"],
+                "spawn_offset": spawn_offset,
+                "x": x,
+                "y": y,
+                "z": z,
+                "yaw": yaw,
+                "route_links": route_links,
+                "route_length_m": route_length_m,
+                "speed": self.choose_dynamic_npc_speed(start_link),
+            }
+
+        return None
+
+    def choose_spawn_pose_for_template(self, template, start_link):
+        points = self.map_loader.get_link_points(start_link)
+        link_len = polyline_length(points)
+        if link_len <= 0.0:
+            return None
+
+        offset_min = float(template.get("spawn_offset_min_m", self.cfg.get("npc_spawn_offset_min_m", 3.0)))
+        offset_max = float(template.get("spawn_offset_max_m", self.cfg.get("npc_spawn_offset_max_m", max(3.0, link_len - 3.0))))
+        low = min(max(0.0, offset_min), max(0.0, link_len - 3.0))
+        high = min(max(low, offset_max), max(0.0, link_len - 3.0))
+        offset = self.random.uniform(low, high)
+        x, y, z, yaw = interpolate_on_polyline(points, offset)
+        return offset, x, y, z, yaw
+
+    def destroy_roundabout_merge_npc(self, npc_info, reason):
+        actor = npc_info.get("actor")
+        label = npc_info.get("label", "npc_roundabout_merge")
+        if actor is not None and hasattr(actor, "destroy"):
+            try:
+                actor.destroy()
+            except Exception as e:
+                print(f"[RoundaboutMerge] npc destroy failed label={label}: {e}")
+        npc_info["destroyed"] = True
+        print(f"[RoundaboutMerge] npc removed label={label}, reason={reason}")
+
+    def cleanup_completed_roundabout_merge_npcs(self):
+        if not getattr(self, "npc_vehicles", None):
+            return
+
+        arrival_distance_m = float(self.cfg.get("npc_cleanup_arrival_distance_m", 8.0))
+        active = []
+        for npc_info in self.npc_vehicles:
+            if npc_info.get("destroyed"):
+                continue
+
+            actor = npc_info.get("actor")
+            route_points = npc_info.get("route_points") or []
+            route_length_m = float(npc_info.get("route_length_m", 0.0))
+            if actor is None or not route_points or route_length_m <= 0.0:
+                active.append(npc_info)
+                continue
+
+            try:
+                state = actor.get_actor_state()
+            except Exception as e:
+                print(f"[RoundaboutMerge] npc state failed label={npc_info.get('label')}: {e}")
+                active.append(npc_info)
+                continue
+
+            if state is None:
+                active.append(npc_info)
+                continue
+
+            x = float(state.transform.location.x)
+            y = float(state.transform.location.y)
+            route_s = project_distance_on_polyline(route_points, x, y)
+            remaining = max(0.0, route_length_m - route_s)
+            if remaining <= arrival_distance_m:
+                self.destroy_roundabout_merge_npc(
+                    npc_info,
+                    f"route complete remaining={remaining:.1f}m",
+                )
+                continue
+
+            active.append(npc_info)
+
+        self.npc_vehicles = active
+
+    def on_gt_bev_timeline_tick(self, **kwargs):
+        current_s = float(kwargs.get("current_s", 0.0))
+        now = time.time()
+
+        topup_interval = float(
+            self.cfg.get("npc_topup_check_sec", self.cfg.get("npc_cleanup_check_sec", 0.2))
+        )
+        if now - getattr(self, "last_npc_topup_time", 0.0) >= topup_interval:
+            self.last_npc_topup_time = now
+            min_count = int(self.cfg.get("npc_count_min", self.cfg.get("npc_count", 4)))
+            alive_count = len(
+                [npc for npc in getattr(self, "npc_vehicles", []) if not npc.get("destroyed")]
+            )
+            if alive_count < min_count:
+                trigger_s = float(getattr(self, "roundabout_merge_npc_spawn_trigger_s", 0.0))
+                ego_state = kwargs.get("ego_state", {}) or {}
+                ego_link = str(ego_state.get("current_link", ""))
+                ego_x = float(ego_state.get("x", 0.0))
+                ego_y = float(ego_state.get("y", 0.0))
+                proximity_m = float(self.cfg.get("npc_spawn_proximity_m", 12.0))
+                trigger_distance_m, trigger_link = self.distance_to_roundabout_trigger_links(ego_x, ego_y)
+                reached_by_s = bool(self.cfg.get("npc_spawn_use_route_s_trigger", False)) and current_s >= trigger_s
+                reached_by_link = ego_link in getattr(self, "roundabout_merge_npc_trigger_links", set())
+                reached_by_distance = trigger_distance_m <= proximity_m
+
+                if reached_by_s or reached_by_link or reached_by_distance:
+                    print(
+                        f"[RoundaboutMerge] topping up npc traffic (alive={alive_count}, min={min_count}) "
+                        f"s={current_s:.1f}m trigger_s={trigger_s:.1f}m "
+                        f"ego_link={ego_link} nearest_trigger_link={trigger_link} "
+                        f"dist={trigger_distance_m:.1f}m proximity={proximity_m:.1f}m"
+                    )
+                    self.spawn_roundabout_merge_traffic()
+
+        interval = float(self.cfg.get("npc_cleanup_check_sec", 0.2))
+        if now - getattr(self, "last_npc_cleanup_time", 0.0) < interval:
+            return
+        self.last_npc_cleanup_time = now
+        self.cleanup_completed_roundabout_merge_npcs()
+
+    def existing_roundabout_npc_state(self, alive_npcs):
+        spawned_positions = []
+        used_start_links = {}
+        used_end_links = {}
+        for npc_info in alive_npcs:
+            x, y = npc_info.get("last_xy", (0.0, 0.0))
+            actor = npc_info.get("actor")
+            if actor is not None:
+                try:
+                    state = actor.get_actor_state()
+                    if state is not None:
+                        x = float(state.transform.location.x)
+                        y = float(state.transform.location.y)
+                except Exception:
+                    pass
+            spawned_positions.append((x, y))
+
+            start_link = npc_info.get("start_link")
+            if start_link:
+                used_start_links[npc_info.get("label", str(id(npc_info)))] = (start_link, x, y)
+
+            end_link = npc_info.get("end_link")
+            if end_link:
+                used_end_links[end_link] = used_end_links.get(end_link, 0) + 1
+
+        return spawned_positions, used_start_links, used_end_links
+
+    def spawn_roundabout_merge_traffic(self):
+        alive_npcs = [npc for npc in getattr(self, "npc_vehicles", []) if not npc.get("destroyed")]
+        min_count = int(self.cfg.get("npc_count_min", self.cfg.get("npc_count", 4)))
+        max_count = int(self.cfg.get("npc_count_max", min_count))
+        if max_count < min_count:
+            max_count = min_count
+        desired_total = self.random.randint(min_count, max_count)
+        target_count = max(0, desired_total - len(alive_npcs))
+        if target_count == 0:
+            print(
+                f"[RoundaboutMerge] npc fleet already at target "
+                f"(alive={len(alive_npcs)}, desired={desired_total}); skip spawn"
+            )
+            return
+
+        use_dynamic_routes = bool(self.cfg.get("npc_dynamic_routes", True))
+        templates = list(self.cfg.get("npc_route_templates", []))
+        if not use_dynamic_routes and not templates:
+            raise RuntimeError("roundabout_merge requires npc_route_templates")
+        route_candidates = []
+        if use_dynamic_routes:
+            self.setup_roundabout_dynamic_npc_routes()
+            route_candidates = self.build_dynamic_npc_route_candidates()
+            if not route_candidates:
+                raise RuntimeError("roundabout_merge found no dynamic NPC route candidates")
+
+        min_spacing = float(self.cfg.get("npc_spawn_min_spacing_m", 10.0))
+        spawn_attempts = int(self.cfg.get("npc_spawn_attempts", 30))
+        global_speed_min = float(self.cfg.get("npc_speed_min_mps", 3.0))
+        global_speed_max = float(self.cfg.get("npc_speed_max_mps", 6.0))
+        ai_enabled = bool(self.cfg.get("npc_ai", True))
+        ego_start_link = str(getattr(self, "start_link", ""))
+        unique_templates = bool(self.cfg.get("npc_unique_route_templates", True))
+        available_templates = list(templates)
+        spawned_positions, used_start_links, used_end_links = self.existing_roundabout_npc_state(alive_npcs)
+        failed_route_keys = set()
+        failed_spawn_cells = set()
+
+        spawned = 0
+        print(
+            f"[RoundaboutMerge] topping up npc traffic target_count={target_count} "
+            f"(alive={len(alive_npcs)}, desired_total={desired_total}), "
+            f"mode={'dynamic' if use_dynamic_routes else 'template'}, exclude_ego_start_link={ego_start_link}"
+        )
+        for idx in range(target_count):
+            npc = None
+            model = None
+            chosen = None
+            start_link = None
+            spawn_offset = 0.0
+            x = y = z = yaw = 0.0
+            route_links = []
+            speed = global_speed_min
+            route_ok = False
+            final_label = f"npc_roundabout_merge_{idx}"
+
+            for attempt_idx in range(spawn_attempts):
+                if use_dynamic_routes:
+                    candidate = self.choose_dynamic_npc_candidate(
+                        spawned_positions,
+                        used_start_links,
+                        used_end_links,
+                        route_candidates,
+                    )
+                    if candidate is None:
+                        continue
+                    template = {"name": candidate["name"], "speed_limit_mps": candidate["speed"]}
+                    candidate_start = candidate["start_link"]
+                    candidate_offset = candidate["spawn_offset"]
+                    candidate_x = candidate["x"]
+                    candidate_y = candidate["y"]
+                    candidate_z = candidate["z"]
+                    candidate_yaw = candidate["yaw"]
+                    candidate_route = candidate["route_links"]
+                    candidate_speed = candidate["speed"]
+                    candidate_route_length_m = candidate["route_length_m"]
+                else:
+                    template_pool = available_templates if unique_templates and available_templates else templates
+                    template = self.weighted_choice(template_pool)
+                    template_route_links = list(template.get("route_links", []))
+                    start_links = list(template.get("start_links", [])) or template_route_links[:1]
+                    start_links = [link for link in start_links if str(link) != ego_start_link]
+                    if not start_links:
+                        continue
+
+                    candidate_start = self.random.choice(start_links)
+                    if candidate_start not in self.map_loader.link_set:
+                        continue
+
+                    pose = self.choose_spawn_pose_for_template(template, candidate_start)
+                    if pose is None:
+                        continue
+
+                    candidate_offset, candidate_x, candidate_y, candidate_z, candidate_yaw = pose
+                    if any(dist_xy(candidate_x, candidate_y, px, py) < min_spacing for px, py in spawned_positions):
+                        continue
+
+                    candidate_route = self.build_npc_route_from_template(template, candidate_start)
+                    if len(candidate_route) < 2:
+                        continue
+
+                    speed_min = float(template.get("speed_min_mps", global_speed_min))
+                    speed_max = float(template.get("speed_max_mps", global_speed_max))
+                    if speed_max < speed_min:
+                        speed_max = speed_min
+                    candidate_speed = self.random.uniform(speed_min, speed_max)
+                    candidate_route_length_m = 0.0
+
+                route_key = tuple(candidate_route)
+                if route_key in failed_route_keys:
+                    continue
+
+                spawn_cell = (
+                    candidate_start,
+                    int(candidate_offset // max(1.0, min_spacing)),
+                )
+                if spawn_cell in failed_spawn_cells:
+                    continue
+
+                label = f"npc_roundabout_merge_{idx}_try_{attempt_idx}"
+                candidate_npc, candidate_model = self.spawn_vehicle_with_model_retry(
+                    self.grpc.make_transform(candidate_x, candidate_y, candidate_z, candidate_yaw),
+                    label,
+                    0.0,
+                )
+                if candidate_npc is None:
+                    failed_spawn_cells.add(spawn_cell)
+                    time.sleep(float(self.cfg.get("npc_spawn_retry_wait_sec", 0.05)))
+                    continue
+
+                candidate_route_ok = self.grpc.set_vehicle_route(
+                    candidate_npc,
+                    candidate_route,
+                    decision_range=self.decision_range,
+                    label=label,
+                )
+                if not candidate_route_ok:
+                    failed_route_keys.add(route_key)
+                    print(
+                        f"[RoundaboutMerge] route failed; destroy npc label={label}, "
+                        f"template={template.get('name', 'unnamed')}, start_link={candidate_start}, "
+                        f"route_links={list(candidate_route)}"
+                    )
+                    if hasattr(candidate_npc, "destroy"):
+                        try:
+                            if hasattr(candidate_npc, "set_pause"):
+                                candidate_npc.set_pause(True)
+                            candidate_npc.destroy()
+                        except Exception as e:
+                            print(f"[RoundaboutMerge] route-failed npc destroy failed label={label}: {e}")
+                    time.sleep(float(self.cfg.get("npc_route_failed_destroy_wait_sec", 0.2)))
+                    continue
+
+                npc = candidate_npc
+                model = candidate_model
+                chosen = template
+                final_label = label
+                start_link = candidate_start
+                spawn_offset = candidate_offset
+                x, y, z, yaw = candidate_x, candidate_y, candidate_z, candidate_yaw
+                route_links = candidate_route
+                speed = candidate_speed
+                route_ok = candidate_route_ok
+                if use_dynamic_routes:
+                    used_start_links[f"{start_link}:{idx}"] = (start_link, x, y)
+                    used_end_links[route_links[-1]] = used_end_links.get(route_links[-1], 0) + 1
+                if not use_dynamic_routes and unique_templates and template in available_templates:
+                    available_templates.remove(template)
+                break
+
+            if npc is None:
+                print(f"[RoundaboutMerge] failed to spawn route-valid npc index={idx}")
+                continue
+
+            npc.set_pause(False)
+            if hasattr(self.grpc, "set_vehicle_speed_limit"):
+                self.grpc.set_vehicle_speed_limit(npc, float(chosen.get("speed_limit_mps", speed)), enabled=True)
+            self.grpc.set_vehicle_velocity(npc, speed)
+            self.grpc.set_vehicle_ai(npc, ai_enabled)
+
+            npc_info = self.register_roundabout_npc(
+                npc,
+                final_label,
+                model,
+                x,
+                y,
+                speed,
+                route_ok=route_ok,
+            )
+            route_points = self.build_route_points(route_links)
+            npc_info["start_link"] = start_link
+            npc_info["route_links"] = list(route_links)
+            npc_info["route_points"] = route_points
+            npc_info["route_length_m"] = candidate_route_length_m or polyline_length(route_points)
+            npc_info["end_link"] = route_links[-1] if route_links else ""
+            spawned_positions.append((x, y))
+            spawned += 1
+
+            print(
+                f"[RoundaboutMerge] npc spawned label={final_label}, "
+                f"template={chosen.get('name', 'unnamed')}, model={model}, "
+                f"start_link={start_link}, offset={spawn_offset:.1f}m, "
+                f"end_link={route_links[-1] if route_links else ''}, "
+                f"route_links={len(route_links)}, route={route_ok}, speed={speed:.1f}m/s"
+            )
+
+        if spawned == 0 and not alive_npcs:
+            raise RuntimeError("Failed to spawn roundabout merge NPC traffic")
+
+        print(f"[RoundaboutMerge] npc traffic topped up {spawned}/{target_count} (alive={len(alive_npcs) + spawned})")
 
 
 class UrbanTrafficJamScenario(UrbanSuddenBrakeExpertScenario):
@@ -2536,9 +4106,9 @@ class UrbanTrafficJamScenario(UrbanSuddenBrakeExpertScenario):
             npc_info["next_state_check_time"] = time.time() + 0.5
         print(f"[UrbanTrafficJam] jam GO vehicles={len(getattr(self, 'jam_npcs', []))}")
 
-    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg):
+    def update_npc_states(self, ego_x, ego_y, ego_yaw_deg, ego_current_link=None):
         if self.brake_event.get("phase") != "stopped":
-            return super().update_npc_states(ego_x, ego_y, ego_yaw_deg)
+            return super().update_npc_states(ego_x, ego_y, ego_yaw_deg, ego_current_link=ego_current_link)
 
         yaw_rad = math.radians(ego_yaw_deg)
         forward_x = math.cos(yaw_rad)

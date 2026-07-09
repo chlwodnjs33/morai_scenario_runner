@@ -1,0 +1,272 @@
+zone: roundabout
+scenarios:
+  basic_drive:
+    start_link: A219BS010079
+    end_link: A219BS010377
+    randomize_links: true
+    zone_links_path: scenario_runner/config/roundabout_links.yaml
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_attempts: 300
+    random_route_pool_enabled: true
+    random_recent_start_memory: 6
+    random_recent_route_memory: 12
+    random_min_route_length_m: 25.0
+    random_max_route_length_m: 0.0
+    random_max_route_links: 0
+    random_max_route_point_gap_m: 8.0
+    random_max_route_turn_deg: 60.0
+    route_setup_attempts: 5
+    drive_control_mode: gt_bev_external
+    gt_bev_repo_path: third_party/GT_BEV
+    gt_bev_map_name: R_KR_PG_KATRI
+    gt_bev_max_velocity_kmh: 25.0
+    gt_bev_traffic_light_control: false
+    gt_bev_ros_remaps:
+      - /ctrl_cmd:=/ctrl_cmd_0
+    gt_bev_arrival_stop_distance_m: 5.0
+    gt_bev_max_cross_track_error_m: 8.0
+    ros_ctrl_cmd_topic: /ctrl_cmd_0
+    ros_ctrl_cmd_longitudinal_type: 1
+    ros_route_path_topic: /scenario_route_path
+    route_debug_enabled: true
+    route_debug_dir: scenario_runner/debug_routes
+    pure_pursuit_speed_kp: 0.5
+    pure_pursuit_target_speed: 7.0
+    pure_pursuit_lookahead_m: 7.0
+    pure_pursuit_wheel_base_m: 2.9
+    pure_pursuit_max_steer_deg: 35.0
+    pure_pursuit_steer_sign: 1.0
+    pure_pursuit_steer_mode: angle
+    pure_pursuit_slowdown_distance_m: 8.0
+    pure_pursuit_min_speed: 1.5
+    pure_pursuit_arrival_stop_distance_m: 5.0
+    pure_pursuit_max_cross_track_error_m: 8.0
+    ego_spawn_offset_m: 5.0
+    goal_offset_from_end_m: 3.0
+    use_ego_destination: false
+    use_route_waypoints: false
+    decision_range_m: 10.0
+    run_duration_sec: 8.0
+    timeout_sec: 0.0
+    goal_tolerance_m: 4.0
+    restart_on_morai_route_complete: true
+    route_complete_goal_tolerance_m: 12.0
+    complete_on_end_link: true
+    end_link_hold_sec: 0.5
+    off_route_timeout_sec: 3.0
+    off_route_grace_sec: 2.0
+    check_period_sec: 0.05
+    max_laps: 0
+    link_speed_ratio: 30
+    constant_velocity: 25
+
+  yield_to_inside_vehicle:
+    start_link: A219BS010376
+    end_link: A219BS010079
+    randomize_links: true
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_start_exclude_links_group: internal_links
+    random_route_end_exclude_links_group: internal_links
+    random_route_required_links_group: internal_links
+    random_route_attempts: 300
+    random_route_pool_enabled: true
+    random_recent_start_memory: 6
+    random_recent_route_memory: 12
+    random_min_route_length_m: 25.0
+    random_max_route_length_m: 700.0
+    random_max_route_links: 15
+    random_max_route_point_gap_m: 8.0
+    random_max_route_turn_deg: 60.0
+    route_setup_attempts: 5
+    route_links:
+      - A219BS010376
+      - A219BS010480
+      - A219BS010477
+      - A219BS010478
+      - A219BS010079
+    ego_entry_routes:
+      - - A219BS010376
+        - A219BS010480
+        - A219BS010477
+        - A219BS010478
+        - A219BS010079
+      - - A219BS010378
+        - A219BS010477
+        - A219BS010478
+        - A219BS010079
+      - - A219BS010377
+        - A219BS010478
+        - A219BS010079
+    zone_links_path: scenario_runner/config/roundabout_links.yaml
+    drive_control_mode: gt_bev_external
+    gt_bev_repo_path: third_party/GT_BEV
+    gt_bev_map_name: R_KR_PG_KATRI
+    gt_bev_max_velocity_kmh: 25.0
+    gt_bev_traffic_light_control: false
+    gt_bev_ros_remaps:
+      - /ctrl_cmd:=/ctrl_cmd_0
+    gt_bev_arrival_stop_distance_m: 5.0
+    gt_bev_max_cross_track_error_m: 8.0
+    ros_ctrl_cmd_topic: /ctrl_cmd_0
+    ros_ctrl_cmd_longitudinal_type: 1
+    ros_route_path_topic: /scenario_route_path
+    route_debug_enabled: true
+    route_debug_dir: scenario_runner/debug_routes
+    ego_spawn_offset_m: 5.0
+    goal_offset_from_end_m: 3.0
+    decision_range_m: 10.0
+    use_ego_destination: false
+    ego_control_mode: external_expert
+    check_period_sec: 0.05
+    print_period_sec: 1.0
+    timeout_sec: 0.0
+    goal_tolerance_m: 4.0
+    off_route_timeout_sec: 3.0
+    off_route_grace_sec: 2.0
+    max_laps: 0
+    reset_ego_motion_on_start: true
+    reset_ego_motion_wait_sec: 0.5
+    npc_vehicle_models:
+      - 2014_Kia_K7
+      - 2020_Hyundai_Ioniq
+      - 2017_Hyundai_Grandeur
+      - 2016_Hyundai_Sonata
+    inside_vehicle_count: 5
+    inside_vehicle_start_links:
+      - A219BS010478
+      - A219BS010479
+      - A219BS010480
+      - A219BS010477
+    inside_vehicle_start_link: A219BS010479
+    inside_vehicle_route_links:
+      - A219BS010479
+      - A219BS010480
+      - A219BS010477
+      - A219BS010478
+    inside_vehicle_route_laps: 50
+    inside_vehicle_spawn_offset_min_m: 4.0
+    inside_vehicle_spawn_offset_max_m: 18.0
+    inside_vehicle_speed_mps: 5.0
+    inside_vehicle_speed_limit: 5.0
+    inside_vehicle_ai: true
+
+  roundabout_merge:
+    start_link: A219BS010376
+    end_link: A219BS010079
+    randomize_links: true
+    allow_connector_links: false
+    random_route_stay_in_zone: true
+    random_route_start_exclude_links_group: internal_links
+    random_route_end_exclude_links_group: internal_links
+    random_route_required_links_group: internal_links
+    random_route_attempts: 300
+    random_route_pool_enabled: true
+    random_recent_start_memory: 6
+    random_recent_route_memory: 12
+    random_min_route_length_m: 25.0
+    random_max_route_length_m: 700.0
+    random_max_route_links: 15
+    random_max_route_point_gap_m: 8.0
+    random_max_route_turn_deg: 60.0
+    route_setup_attempts: 5
+    route_links:
+      - A219BS010376
+      - A219BS010480
+      - A219BS010477
+      - A219BS010478
+      - A219BS010079
+    ego_entry_routes:
+      - - A219BS010376
+        - A219BS010480
+        - A219BS010477
+        - A219BS010478
+        - A219BS010079
+      - - A219BS010378
+        - A219BS010477
+        - A219BS010478
+        - A219BS010079
+      - - A219BS010377
+        - A219BS010478
+        - A219BS010079
+    zone_links_path: scenario_runner/config/roundabout_links.yaml
+    drive_control_mode: gt_bev_external
+    gt_bev_repo_path: third_party/GT_BEV
+    gt_bev_map_name: R_KR_PG_KATRI
+    gt_bev_max_velocity_kmh: 40.0
+    gt_bev_traffic_light_control: false
+    gt_bev_ros_remaps:
+      - /ctrl_cmd:=/ctrl_cmd_0
+    gt_bev_arrival_stop_distance_m: 5.0
+    gt_bev_max_cross_track_error_m: 8.0
+    ros_ctrl_cmd_topic: /ctrl_cmd_0
+    ros_ctrl_cmd_longitudinal_type: 1
+    ros_route_path_topic: /scenario_route_path
+    route_debug_enabled: true
+    route_debug_dir: scenario_runner/debug_routes
+    ego_spawn_offset_m: 5.0
+    goal_offset_from_end_m: 3.0
+    decision_range_m: 10.0
+    use_ego_destination: false
+    ego_control_mode: external_expert
+    check_period_sec: 0.05
+    print_period_sec: 1.0
+    timeout_sec: 0.0
+    goal_tolerance_m: 4.0
+    off_route_timeout_sec: 3.0
+    off_route_grace_sec: 2.0
+    max_laps: 0
+    reset_ego_motion_on_start: true
+    reset_ego_motion_wait_sec: 0.5
+    npc_spawn_before_roundabout_m: 8.0
+    npc_spawn_proximity_m: 60.0
+    npc_spawn_use_route_s_trigger: false
+    npc_spawn_trigger_links:
+      - A219BS010480
+      - A219BS010477
+      - A219BS010478
+    npc_count_min: 9
+    npc_count_max: 11
+    npc_spawn_attempts: 40
+    npc_spawn_retry_wait_sec: 0.05
+    npc_route_failed_destroy_wait_sec: 0.2
+    npc_spawn_min_spacing_m: 10.0
+    npc_spawn_min_link_spacing_m: 12.0
+    npc_dynamic_routes: true
+    npc_dynamic_route_attempts: 60
+    npc_spawn_pose_attempts_per_route: 5
+    npc_internal_spawn_probability: 0.45
+    npc_avoid_ego_ahead_link_count: 2
+    npc_route_min_length_m: 25.0
+    npc_route_max_length_m: 450.0
+    npc_route_max_links: 6
+    npc_entry_speed_min_mps: 6.0
+    npc_entry_speed_max_mps: 9.0
+    npc_internal_speed_min_mps: 4.0
+    npc_internal_speed_max_mps: 7.0
+    npc_unique_route_templates: true
+    npc_ai: true
+    npc_vehicle_models:
+      - 2014_Kia_K7
+      - 2020_Hyundai_Ioniq
+      - 2017_Hyundai_Grandeur
+      - 2016_Hyundai_Sonata
+    npc_cleanup_arrival_distance_m: 8.0
+    npc_cleanup_check_sec: 0.2
+  enter_roundabout:
+    enabled: false
+    zone_links_path: scenario_runner/config/roundabout_links.yaml
+    ego_start_links_group: entry_links
+    target_inside_links_group: internal_links
+
+  follow_front_vehicle:
+    enabled: false
+    zone_links_path: scenario_runner/config/roundabout_links.yaml
+    inside_links_group: internal_links
+
+  exit_roundabout:
+    enabled: false
+    zone_links_path: scenario_runner/config/roundabout_links.yaml
+    inside_start_links_group: internal_links
+    exit_links_group: exit_links

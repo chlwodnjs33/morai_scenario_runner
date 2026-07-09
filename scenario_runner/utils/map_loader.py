@@ -48,6 +48,23 @@ class MGeoMapLoader:
         link = self.get_link(link_id)
         return link["points"]
 
+    def get_lane_group_link_ids(self, link_id: str):
+        """link_id 자신 + 좌/우 차로 변경으로 넘어갈 수 있는 인접 링크 id."""
+        links = {link_id}
+        link = self.link_set.get(link_id)
+        if link is None:
+            return links
+
+        left_id = link.get("left_lane_change_dst_link_idx")
+        if left_id:
+            links.add(left_id)
+
+        right_id = link.get("right_lane_change_dst_link_idx")
+        if right_id:
+            links.add(right_id)
+
+        return links
+
     def _crosswalk_spawn_info_from_points(self, pts, label: str):
         # 마지막 점이 첫 점과 같으면(polygon 닫힘) 제거
         if len(pts) >= 2 and pts[0][:2] == pts[-1][:2]:

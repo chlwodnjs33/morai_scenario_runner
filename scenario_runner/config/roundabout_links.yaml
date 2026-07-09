@@ -1,0 +1,86 @@
+﻿roundabout:
+  route_links:
+    - A219BS010079
+    - A219BS010376
+    - A219BS010378
+    - A219BS010377
+    - A219BS010380
+    - A219BS010478
+    - A219BS010479
+    - A219BS010480
+    - A219BS010477
+
+  internal_links:
+    - A219BS010478
+    - A219BS010479
+    - A219BS010480
+    - A219BS010477
+
+  entry_links:
+    northwest:
+      - A219BS010079
+      - A219BS010376
+    east:
+      - A219BS010377
+      - A219BS010380
+    south:
+      - A219BS010378
+
+  exit_links:
+    northwest:
+      - A219BS010079
+      - A219BS010376
+    east:
+      - A219BS010377
+      - A219BS010380
+    south:
+      - A219BS010378
+
+  event_links:
+    yield_to_inside_vehicle:
+      ego_start_links:
+        - A219BS010079
+        - A219BS010376
+        - A219BS010377
+        - A219BS010380
+        - A219BS010378
+      npc_inside_links:
+        - A219BS010478
+        - A219BS010479
+        - A219BS010480
+        - A219BS010477
+
+    enter_roundabout:
+      ego_start_links:
+        - A219BS010079
+        - A219BS010376
+        - A219BS010377
+        - A219BS010380
+        - A219BS010378
+      target_inside_links:
+        - A219BS010478
+        - A219BS010479
+        - A219BS010480
+        - A219BS010477
+
+    follow_front_vehicle:
+      inside_links:
+        - A219BS010478
+        - A219BS010479
+        - A219BS010480
+        - A219BS010477
+
+    exit_roundabout:
+      inside_start_links:
+        - A219BS010478
+        - A219BS010479
+        - A219BS010480
+        - A219BS010477
+      exit_links:
+        - A219BS010079
+        - A219BS010376
+        - A219BS010377
+        - A219BS010380
+        - A219BS010378
+
+  exclude_links: []
