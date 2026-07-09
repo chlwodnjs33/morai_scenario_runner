@@ -146,19 +146,39 @@ scenarios:
     brake_lane_group_filter: true
     npc_near_ego_min_count: 5
   merge_judgement:
-    start_link: A219BS010305
+    # ego: 램프(A219BS010440)에서 출발해 고속도로 본선으로 합류.
+    # ego_route_options에서 매번 랜덤으로 조기 합류(320->321) / 후기 합류(320->303->310) 중 하나를 고름.
+    start_link: A219BS010440
     end_link: A219BS010301
     route_links:
-      - A219BS010306
-      - A219BS010305
+      - A219BS010440
+      - A219BS010320
       - A219BS010321
       - A219BS010310
       - A219BS010314
       - A219BS010301
-    merge_vehicle_start_link: A219BS010440
+    ego_route_options:
+      - route_links:
+          - A219BS010440
+          - A219BS010320
+          - A219BS010321
+          - A219BS010310
+          - A219BS010314
+          - A219BS010301
+        merge_conflict_link: A219BS010321
+      - route_links:
+          - A219BS010440
+          - A219BS010320
+          - A219BS010303
+          - A219BS010310
+          - A219BS010314
+          - A219BS010301
+        merge_conflict_link: A219BS010310
+    # merge_vehicle_*: 본선을 그대로 달리는 NPC 교통류 (ego가 이 사이로 합류해야 함)
+    merge_vehicle_start_link: A219BS010306
     merge_vehicle_route_links:
-      - A219BS010440
-      - A219BS010320
+      - A219BS010306
+      - A219BS010305
       - A219BS010321
       - A219BS010310
       - A219BS010314
@@ -168,7 +188,7 @@ scenarios:
     drive_control_mode: gt_bev_external
     gt_bev_repo_path: third_party/GT_BEV
     gt_bev_map_name: R_KR_PG_KATRI
-    gt_bev_max_velocity_kmh: 80.0
+    gt_bev_max_velocity_kmh: 65.0
     gt_bev_traffic_light_control: false
     gt_bev_ros_remaps:
       - /ctrl_cmd:=/ctrl_cmd_0
@@ -198,14 +218,16 @@ scenarios:
       - 2020_Hyundai_Ioniq
       - 2017_Hyundai_Grandeur
       - 2016_Hyundai_Sonata
-    merge_vehicle_count: 6
-    merge_vehicle_spawn_offsets_m:
-      - 120.0
-      - 114.0
-      - 108.0
-      - 102.0
-      - 96.0
-      - 90.0
+    merge_vehicle_count_min: 8
+    merge_vehicle_count_max: 12
+    merge_vehicle_lane_spread: true
+    merge_vehicle_lanes_per_row: 3
+    merge_vehicle_cluster_start_offset_m: 45.0
+    merge_vehicle_cluster_row_spacing_m: 15.0
+    merge_vehicle_min_spacing_m: 6.0
+    merge_vehicle_release_link: A219BS010440
+    merge_vehicle_release_before_end_m: 35.0
+    merge_vehicle_hold_until_release: true
     merge_vehicle_speed_mps: 22.0
     merge_vehicle_speed_limit: 22.0
     merge_vehicle_ai: true

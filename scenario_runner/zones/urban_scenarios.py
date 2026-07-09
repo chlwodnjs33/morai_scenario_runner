@@ -2188,15 +2188,17 @@ class UrbanSuddenBrakeExpertScenario(UrbanBasicDriveScenario):
             self.grpc.set_vehicle_speed_limit(npc, speed_limit, enabled=True)
         self.grpc.set_vehicle_ai(npc, True)
 
-    def find_route_link_at_s(self, target_s):
+    def find_route_link_at_s(self, target_s, route_links=None):
         """route_links를 따라가다가 arc-length target_s가 속하는 (link_id, link 내부 offset)을 반환."""
+        if route_links is None:
+            route_links = self.route_links
         accumulated = 0.0
-        for link_id in self.route_links:
+        for link_id in route_links:
             link_len = polyline_length(self.map_loader.get_link_points(link_id))
             if target_s <= accumulated + link_len:
                 return link_id, max(0.0, target_s - accumulated)
             accumulated += link_len
-        return self.route_links[-1], 0.0
+        return route_links[-1], 0.0
 
     def spawn_ai_npc_near_route(self, label, existing_xy, force_own_lane=False):
         """
@@ -2680,21 +2682,28 @@ class HighwayMergeJudgementScenario(UrbanSuddenBrakeExpertScenario):
         self.select_route_for_next_drive()
         self.grpc.start_world(self.start_tf)
         self.spawn_merge_vehicle()
+        self.prepare_merge_vehicle_release_trigger()
         self.configure_drive_with_retries()
 
     def select_route_for_next_drive(self):
-        route_links = list(self.cfg.get("route_links", []))
+        route_options = self.cfg.get("ego_route_options")
+        if route_options:
+            option = self.random.choice(route_options)
+            route_links = list(option.get("route_links", []))
+            conflict_link = option.get("merge_conflict_link", self.cfg.get("merge_conflict_link"))
+        else:
+            route_links = list(self.cfg.get("route_links", []))
+            conflict_link = self.cfg.get("merge_conflict_link")
+
         if len(route_links) < 2:
             raise RuntimeError("merge_judgement requires at least two route_links")
 
-        self.start_link = self.cfg.get("start_link", route_links[0])
-        self.end_link = self.cfg.get("end_link", route_links[-1])
+        self.start_link = route_links[0]
+        self.end_link = route_links[-1]
         self.prepare_route(route_links=route_links, route_length_m=0.0)
-        self.merge_conflict_s = self.project_link_midpoint_on_ego_route(
-            self.cfg.get("merge_conflict_link")
-        )
+        self.merge_conflict_s = self.project_link_midpoint_on_ego_route(conflict_link)
         if self.merge_conflict_s is not None:
-            print(f"[HighwayMerge] conflict_link={self.cfg.get('merge_conflict_link')} s={self.merge_conflict_s:.1f}m")
+            print(f"[HighwayMerge] conflict_link={conflict_link} s={self.merge_conflict_s:.1f}m")
 
     def restart_to_start_and_drive(self):
         print("[HighwayMerge] restart to start")
@@ -2708,6 +2717,7 @@ class HighwayMergeJudgementScenario(UrbanSuddenBrakeExpertScenario):
         self.merge_vehicles = []
         self.merge_vehicle_info = None
         self.spawn_merge_vehicle()
+        self.prepare_merge_vehicle_release_trigger()
         self.configure_drive_with_retries()
 
     def project_link_midpoint_on_ego_route(self, link_id):
@@ -2719,32 +2729,109 @@ class HighwayMergeJudgementScenario(UrbanSuddenBrakeExpertScenario):
         mid = points[len(points) // 2]
         return project_distance_on_polyline(self.route_points, mid[0], mid[1])
 
+    def prepare_merge_vehicle_release_trigger(self):
+        """ego가 release_link(기본: 램프 첫 링크) 끝에 가까워지면 대기 중인 NPC 교통류를 풀어준다."""
+        release_link = self.cfg.get("merge_vehicle_release_link", self.route_links[0])
+        before_end_m = float(self.cfg.get("merge_vehicle_release_before_end_m", 20.0))
+
+        accumulated = 0.0
+        release_link_end_s = self.route_length_m
+        for link_id in self.route_links:
+            accumulated += polyline_length(self.map_loader.get_link_points(link_id))
+            if link_id == release_link:
+                release_link_end_s = accumulated
+                break
+
+        self.merge_vehicle_release_trigger_s = max(0.0, release_link_end_s - before_end_m)
+        self.merge_vehicles_released = False
+        print(
+            f"[HighwayMerge] merge vehicle release armed: release_link={release_link}, "
+            f"end_s={release_link_end_s:.1f}m, trigger_s={self.merge_vehicle_release_trigger_s:.1f}m"
+        )
+
     def spawn_merge_vehicle(self):
         route_links = list(self.cfg.get("merge_vehicle_route_links", []))
         if len(route_links) < 2:
             raise RuntimeError("merge_judgement requires merge_vehicle_route_links")
 
         start_link = self.cfg.get("merge_vehicle_start_link", route_links[0])
-        start_points = self.map_loader.get_link_points(start_link)
-        start_link_len = polyline_length(start_points)
+        route_points = self.build_route_points(route_links)
+        route_total_len = polyline_length(route_points)
         speed = float(self.cfg.get("merge_vehicle_speed_mps", 12.0))
+        dest_link = route_links[-1]
+        lane_spread = bool(self.cfg.get("merge_vehicle_lane_spread", True))
+        min_gap = float(self.cfg.get("merge_vehicle_min_spacing_m", 6.0))
+        nudge_attempts = int(self.cfg.get("merge_vehicle_spawn_nudge_attempts", 6))
+        nudge_step_m = float(self.cfg.get("merge_vehicle_spawn_nudge_step_m", 5.0))
 
         configured_offsets = self.cfg.get("merge_vehicle_spawn_offsets_m")
         if configured_offsets:
             spawn_offsets = [float(offset) for offset in configured_offsets]
         else:
-            count = int(self.cfg.get("merge_vehicle_count", 1))
-            base_offset = float(self.cfg.get("merge_vehicle_spawn_offset_m", 5.0))
-            spacing = float(self.cfg.get("merge_vehicle_spacing_m", 25.0))
-            spawn_offsets = [base_offset - spacing * i for i in range(count)]
+            count_min = int(self.cfg.get("merge_vehicle_count_min", self.cfg.get("merge_vehicle_count", 1)))
+            count_max = int(self.cfg.get("merge_vehicle_count_max", count_min))
+            if count_max < count_min:
+                count_max = count_min
+            count = self.random.randint(count_min, count_max)
+            lanes_per_row = max(1, int(self.cfg.get("merge_vehicle_lanes_per_row", 3)))
+            cluster_start_offset_m = float(self.cfg.get("merge_vehicle_cluster_start_offset_m", 45.0))
+            cluster_row_spacing_m = float(self.cfg.get("merge_vehicle_cluster_row_spacing_m", 15.0))
+            spawn_offsets = [
+                cluster_start_offset_m + cluster_row_spacing_m * (i // lanes_per_row)
+                for i in range(count)
+            ]
 
         self.merge_vehicles = []
         self.merge_vehicle = None
         self.merge_vehicle_info = None
+        spawned_positions = []
 
         for i, raw_offset in enumerate(spawn_offsets):
-            spawn_offset = min(max(0.0, raw_offset), max(0.0, start_link_len - 3.0))
-            x, y, z, yaw = interpolate_on_polyline(start_points, spawn_offset)
+            link_id = None
+            vehicle_route_links = route_links
+            base_link_id = None
+            target_s = raw_offset
+            x = y = z = yaw = 0.0
+            spawn_offset = 0.0
+
+            for attempt in range(nudge_attempts):
+                target_s = min(max(0.0, raw_offset + nudge_step_m * attempt), max(0.0, route_total_len - 3.0))
+                base_link_id, local_offset = self.find_route_link_at_s(target_s, route_links=route_links)
+
+                candidate_link = base_link_id
+                candidate_route_links = route_links
+                if lane_spread:
+                    lane_links = list(self.map_loader.get_lane_group_link_ids(base_link_id))
+                    # 랜덤이 아니라 순서대로 돌려가며 배정해서 차로별로 고르게 퍼지게 한다
+                    chosen_link = lane_links[i % len(lane_links)]
+                    if chosen_link != base_link_id:
+                        try:
+                            lane_route, _ = build_route_between(self.map_loader, chosen_link, dest_link)
+                        except Exception:
+                            lane_route = []
+                        if len(lane_route) >= 2:
+                            candidate_link = chosen_link
+                            candidate_route_links = lane_route
+
+                points = self.map_loader.get_link_points(candidate_link)
+                link_len = polyline_length(points)
+                candidate_offset = min(max(local_offset, 2.0), max(2.0, link_len - 2.0))
+                cx, cy, cz, cyaw = interpolate_on_polyline(points, candidate_offset)
+
+                # 인접 차로 수가 lanes_per_row보다 적으면 같은 차로에 겹칠 수 있어 자리를 확인하고,
+                # 겹치면 조금씩 앞으로 밀어서(nudge) 다시 시도한다
+                if any(dist_xy(cx, cy, px, py) < min_gap for px, py in spawned_positions):
+                    continue
+
+                link_id = candidate_link
+                vehicle_route_links = candidate_route_links
+                x, y, z, yaw = cx, cy, cz, cyaw
+                spawn_offset = candidate_offset
+                break
+            else:
+                print(f"[HighwayMerge] npc_merge_{i} skipped: no clear spawn slot found near s={raw_offset:.1f}m")
+                continue
+
             label = f"npc_merge_{i}"
 
             npc, model = self.spawn_vehicle_with_model_retry(
@@ -2756,14 +2843,15 @@ class HighwayMergeJudgementScenario(UrbanSuddenBrakeExpertScenario):
                 print(f"[HighwayMerge] failed to spawn {label}")
                 continue
 
+            spawned_positions.append((x, y))
+
             route_ok = self.grpc.set_vehicle_route(
                 npc,
-                route_links,
+                vehicle_route_links,
                 decision_range=self.decision_range,
                 label=label,
             )
 
-            npc.set_pause(False)
             if hasattr(self.grpc, "set_vehicle_speed_limit"):
                 self.grpc.set_vehicle_speed_limit(
                     npc,
@@ -2772,13 +2860,21 @@ class HighwayMergeJudgementScenario(UrbanSuddenBrakeExpertScenario):
                 )
             self.grpc.set_vehicle_velocity(npc, speed)
             self.grpc.set_vehicle_ai(npc, bool(self.cfg.get("merge_vehicle_ai", True)))
+            # ego의 GT_BEV expert가 실제로 출발하기 전까지 정지시켜서, 준비 시간 동안
+            # NPC 교통류가 먼저 다 지나가버리는 것을 방지 (release_merge_vehicles에서 풀어줌)
+            npc.set_pause(bool(self.cfg.get("merge_vehicle_hold_until_release", True)))
+
+            print(
+                f"[HighwayMerge] npc spawned label={label}, lane_link={link_id} "
+                f"(base={base_link_id}), route_s~={target_s:.1f}m"
+            )
 
             info = {
                 "actor": npc,
                 "label": label,
                 "model": model,
-                "route_links": route_links,
-                "start_link": start_link,
+                "route_links": vehicle_route_links,
+                "start_link": link_id,
                 "spawn_offset_m": spawn_offset,
                 "last_xy": (x, y),
                 "last_time": time.time(),
@@ -2792,14 +2888,33 @@ class HighwayMergeJudgementScenario(UrbanSuddenBrakeExpertScenario):
                 self.merge_vehicle = npc
                 self.merge_vehicle_info = info
 
-            print(
-                f"[HighwayMerge] npc spawned label={label}, model={model}, "
-                f"start_link={start_link}, offset={spawn_offset:.1f}m, "
-                f"route={route_ok}, speed={speed:.1f}m/s"
-            )
-
         if not self.merge_vehicles:
             raise RuntimeError("Failed to spawn any merge NPC")
+
+    def release_merge_vehicles(self):
+        """
+        ego의 GT_BEV expert가 실제로 출발하는 시점에 맞춰 대기 중이던 NPC 교통류를 동시에 풀어준다.
+        set_pause(False)만으로는 속도가 0부터 서서히 올라가서 ego를 놓치므로,
+        속도/AI를 다시 명시적으로 걸어서 즉시 순항 속도로 복귀시킨다.
+        """
+        now = time.time()
+        speed = float(self.cfg.get("merge_vehicle_speed_mps", 12.0))
+        for info in self.merge_vehicles:
+            actor = info.get("actor")
+            if actor is None:
+                continue
+            actor.set_pause(False)
+            if hasattr(self.grpc, "set_vehicle_speed_limit"):
+                self.grpc.set_vehicle_speed_limit(
+                    actor,
+                    float(self.cfg.get("merge_vehicle_speed_limit", speed)),
+                    enabled=True,
+                )
+            self.grpc.set_vehicle_velocity(actor, speed)
+            self.grpc.set_vehicle_ai(actor, bool(self.cfg.get("merge_vehicle_ai", True)))
+            info["last_xy"] = info.get("last_xy", (0.0, 0.0))
+            info["last_time"] = now
+        print(f"[HighwayMerge] released {len(self.merge_vehicles)} merge NPC(s)")
 
     def get_merge_vehicle_state(self):
         candidates = self.merge_vehicles or ([self.merge_vehicle_info] if self.merge_vehicle_info else [])
@@ -2879,6 +2994,10 @@ class HighwayMergeJudgementScenario(UrbanSuddenBrakeExpertScenario):
             current_s = max(getattr(self, "gt_bev_last_s", 0.0), current_s)
             self.gt_bev_last_s = current_s
             remaining_s = max(0.0, self.route_length_m - current_s)
+
+            if not self.merge_vehicles_released and current_s >= self.merge_vehicle_release_trigger_s:
+                self.release_merge_vehicles()
+                self.merge_vehicles_released = True
 
             merge_state = self.get_merge_vehicle_state()
             merge_gap = None
