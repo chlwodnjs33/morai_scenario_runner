@@ -41,6 +41,13 @@ def _load_json(path):
         return json.load(f)
 
 
+def _load_json_optional(path):
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def _point_key(point):
     if len(point) < 2:
         return None
@@ -152,11 +159,11 @@ class TrafficLightStoplineMapper(object):
 
     def __init__(self, map_dir):
         """map_dir: R_KR_PG_KATRI 폴더의 절대경로"""
-        traffic_light_set        = _load_json(os.path.join(map_dir, "traffic_light_set.json"))
-        synced_traffic_light_set = _load_json(os.path.join(map_dir, "synced_traffic_light_set.json"))
+        traffic_light_set        = _load_json_optional(os.path.join(map_dir, "traffic_light_set.json"))
+        synced_traffic_light_set = _load_json_optional(os.path.join(map_dir, "synced_traffic_light_set.json"))
         link_set                 = _load_json(os.path.join(map_dir, "link_set.json"))
         node_set                 = _load_json(os.path.join(map_dir, "node_set.json"))
-        stopline_set             = _load_json(os.path.join(map_dir, "stoplane_marking_set.json"))
+        stopline_set             = _load_json_optional(os.path.join(map_dir, "stoplane_marking_set.json"))
 
         self.synced_signal_map = _build_synced_signal_map(synced_traffic_light_set)
         self._stopline_map = _build_traffic_stopline_map(

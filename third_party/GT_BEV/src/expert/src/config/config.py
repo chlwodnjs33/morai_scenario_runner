@@ -46,8 +46,11 @@ class Config(object):
         mgeo_signal_path = os.path.normpath(os.path.join(
             os.path.dirname(__file__), '../../../../', self["map"]["name"], 'traffic_light_set.json'
         ))
-        with io.open(mgeo_signal_path, 'r', encoding='utf-8') as f:
-            mgeo_signals = json.load(f)
+        if os.path.isfile(mgeo_signal_path):
+            with io.open(mgeo_signal_path, 'r', encoding='utf-8') as f:
+                mgeo_signals = json.load(f)
+        else:
+            mgeo_signals = []
 
         traffic_light_rows = []
         for s in mgeo_signals:

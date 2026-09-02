@@ -106,7 +106,22 @@ class IncomingQueue(threading.Thread):
 
                 msg = self.queue.popleft()
 
-            self.protocol.incoming(msg)
+            try:  # rosbridge-resilience-patch v2
+                self.protocol.incoming(msg)
+            except Exception:
+                _log_exception()
+                try:
+                    sample = msg[:300] if hasattr(msg, "__getitem__") else msg
+                    rospy.logerr(
+                        "rosbridge-resilience-patch: msg type=%s len=%s sample=%r"
+                        % (type(msg).__name__, len(msg) if hasattr(msg, "__len__") else "?", sample)
+                    )
+                except Exception:
+                    pass
+                if getattr(self.protocol, "bson_only_mode", False):
+                    self.protocol.buffer = bytearray()
+                else:
+                    self.protocol.buffer = ""
 
         self.protocol.finish()
 

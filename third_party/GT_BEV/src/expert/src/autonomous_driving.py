@@ -58,6 +58,26 @@ class AutonomousDriving:
         # 경로 추종을 위한 pure pursuit control
         self.pure_pursuit.path = local_path
         self.pure_pursuit.vehicle_state = vehicle_state
-        steering_cmd = self.pure_pursuit.calculate_steering_angle() / self.max_steering
+        # CtrlCmd.front_steer in MORAI 26.R1 is a front-wheel angle in radians,
+        # not a normalized [-1, 1] command. GT_BEV's pure-pursuit lateral sign
+        # is opposite to the sign observed at the simulator interface, so flip
+        # it exactly once here and clamp it to the physical steering limit.
+        raw_steering_rad = self.pure_pursuit.calculate_steering_angle()
+        front_steer_rad = np.clip(
+            -raw_steering_rad,
+            -self.max_steering,
+            self.max_steering,
+        )
 
-        return ControlInput(acc_cmd, steering_cmd), local_path
+        self._debug_counter = getattr(self, "_debug_counter", 0) + 1
+        if self._debug_counter >= 30:
+            self._debug_counter = 0
+            print(
+                f"[CTRL] raw_steering={np.degrees(raw_steering_rad):+.2f}deg "
+                f"front_steer={np.degrees(front_steer_rad):+.2f}deg "
+                f"({front_steer_rad:+.3f}rad) acc_cmd={acc_cmd:+.3f} "
+                f"target_v={target_velocity:.2f} planned_v={planned_velocity:.2f} "
+                f"cur_v={vehicle_state.velocity:.2f}"
+            )
+
+        return ControlInput(acc_cmd, front_steer_rad), local_path

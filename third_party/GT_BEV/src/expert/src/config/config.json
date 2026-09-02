@@ -20,7 +20,8 @@
     "velocity_profile": {
       "max_velocity": 60.0,
       "road_friction": 0.15,
-      "window_size": 50
+      "window_size": 50,
+      "terminal_deceleration": 2.0
     },
     "adaptive_cruise_control": {
       "velocity_gain": 0.5,

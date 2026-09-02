@@ -873,7 +873,8 @@ class UrbanBasicDriveScenario(BaseScenario):
         cmd = self.ros_ctrl_cmd_msg_type()
         long_cmd_type = int(self.cfg.get("ros_ctrl_cmd_longitudinal_type", 1))
         cmd.longlCmdType = long_cmd_type
-        cmd.steering = float(steer)
+        cmd.front_steer = float(steer)
+        cmd.rear_steer = 0.0
 
         if brake_override is not None:
             cmd.accel = 0.0
@@ -921,6 +922,8 @@ class UrbanBasicDriveScenario(BaseScenario):
         traffic_light_control = bool(self.cfg.get("gt_bev_traffic_light_control", True))
         ros_remaps = self.cfg.get("gt_bev_ros_remaps", [])
         python_executable = self.cfg.get("gt_bev_python_executable")
+        is_closed_path = bool(self.cfg.get("gt_bev_is_closed_path", False))
+        velocity_profile_window_size = self.cfg.get("gt_bev_velocity_profile_window_size")
 
         self.gt_bev_expert = GTBEVExpertController(
             repo_path=repo_path,
@@ -933,6 +936,8 @@ class UrbanBasicDriveScenario(BaseScenario):
             traffic_light_control=traffic_light_control,
             python_executable=python_executable,
             ros_remaps=ros_remaps,
+            is_closed_path=is_closed_path,
+            velocity_profile_window_size=velocity_profile_window_size,
         )
 
     def stop_gt_bev_expert_controller(self):
@@ -1129,7 +1134,13 @@ class UrbanBasicDriveScenario(BaseScenario):
 
             near_route_end = remaining_s <= arrival_stop_distance_m
             route_end_reached = near_route_end and cross_track_error <= max_cross_track_error_m
-            goal_reached = route_end_reached or dist_to_goal <= goal_tolerance_m
+            minimum_completion_s = self.route_length_m * float(
+                self.cfg.get("minimum_completion_progress_ratio", 0.0)
+            )
+            progress_ready = current_s >= minimum_completion_s
+            goal_reached = progress_ready and (
+                route_end_reached or dist_to_goal <= goal_tolerance_m
+            )
 
             if elapsed >= off_route_grace_sec and cross_track_error > max_cross_track_error_m:
                 if off_route_enter_time is None:

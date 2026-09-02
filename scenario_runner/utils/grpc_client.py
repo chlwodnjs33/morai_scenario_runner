@@ -113,7 +113,44 @@ class MoraiGrpcClient:
         if self.world is None:
             raise RuntimeError("Failed to start MORAI simulation world")
 
+        self._patch_spawn_diagnostics()
         print("[MORAI] world started")
+
+    def resume_world(self):
+        if self.world is None:
+            raise RuntimeError("world is None. Call start_world() first.")
+        self.world.resume()
+        print("[MORAI] world resumed")
+
+    def _patch_spawn_diagnostics(self):
+        """
+        third_party SimulationWorld.spawn_*()는 성공/실패(status)만 보고 서버가
+        돌려주는 Result.description(실패 사유 텍스트)을 버린다. 원인 파악을 위해
+        실패 시 status/description을 출력하도록 sim_adapter 레벨에서 감싼다.
+        """
+        from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
+
+        adapter = self.world._sim_adapter
+        if getattr(adapter, "_scenario_runner_spawn_diagnostics_patched", False):
+            return
+
+        def make_wrapper(name, original_fn):
+            def wrapper(param):
+                response = original_fn(param)
+                if response is not None and response.status != STATUS_CODE_SUCCESS:
+                    print(
+                        f"[MORAI] {name} failed: status={response.status} "
+                        f"description={response.description!r}"
+                    )
+                return response
+
+            return wrapper
+
+        for method_name in ("spawn_vehicle", "spawn_pedestrian", "spawn_obstacle"):
+            original = getattr(adapter, method_name)
+            setattr(adapter, method_name, make_wrapper(method_name, original))
+
+        adapter._scenario_runner_spawn_diagnostics_patched = True
 
     def reset_actors(self):
         if self.world is not None:
@@ -221,7 +258,15 @@ class MoraiGrpcClient:
         result = vehicle._sim_adapter.set_vehicle_route(param)
         ok = result is not None and result.status == STATUS_CODE_SUCCESS
 
-        print(f"[{label}] set_vehicle_route: {ok}, links={list(route_links)}")
+        route_link_list = list(route_links)
+        if len(route_link_list) <= 12:
+            route_summary = route_link_list
+        else:
+            route_summary = route_link_list[:4] + ["..."] + route_link_list[-4:]
+        print(
+            f"[{label}] set_vehicle_route: {ok}, "
+            f"link_count={len(route_link_list)}, links={route_summary}"
+        )
         return ok
 
     def set_ego_cruise(self, enable=True, link_speed_ratio=40, constant_velocity=20, cruise_type="link"):
@@ -265,23 +310,31 @@ class MoraiGrpcClient:
 
     def set_ego_control_mode_auto(self):
         """
-        Ego control mode를 외부 알고리즘 제어 모드로 설정.
+        Ego control mode를 외부 알고리즘 통합 제어 모드로 설정한다.
+
+        AUTO/LATERAL/LONGITUDINAL은 비트 플래그가 아니라 서로 배타적인 단일 enum이다.
+        따라서 세 값을 연속 호출하면 마지막 LONGITUDINAL만 남아 조향 명령이 무시된다.
         """
-        from proto.morai.actor.actor_set_pb2 import VehicleControlModeParam
         from proto.morai.actor.actor_enum_pb2 import VEHICLE_CONTROL_AUTO_MODE
-        from proto.morai.common.enum_pb2 import STATUS_CODE_SUCCESS
 
         ego = self.get_ego()
-
-        param = VehicleControlModeParam()
-        param.actor_info.CopyFrom(ego.get_object_info())
-        param.mode = VEHICLE_CONTROL_AUTO_MODE
-
-        result = ego._sim_adapter.set_vehicle_control_mode(param)
-        ok = result is not None and result.status == STATUS_CODE_SUCCESS
-
+        ok = ego.set_control_mode(VEHICLE_CONTROL_AUTO_MODE)
         print(f"[Ego] set_control_mode AUTO: {ok}")
-        return ok
+        if not ok:
+            return False
+
+        try:
+            actual_mode = int(ego.get_control_mode())
+        except Exception as e:
+            print(f"[Ego] get_control_mode verification unavailable: {e}")
+            return True
+
+        verified = actual_mode == int(VEHICLE_CONTROL_AUTO_MODE)
+        print(
+            f"[Ego] control_mode actual={actual_mode}, "
+            f"expected=AUTO({int(VEHICLE_CONTROL_AUTO_MODE)}), verified={verified}"
+        )
+        return verified
 
     def control_ego(self, steer, target_speed, brake=0.0, throttle=0.0):
         from proto.morai.actor.actor_enum_pb2 import LONG_CMD_TYPE_SPEED
@@ -516,6 +569,102 @@ class MoraiGrpcClient:
             return []
 
         return list(objects.pedestrian)
+
+    def get_available_obstacle_models(self):
+        try:
+            objects = self.get_available_objects()
+        except Exception as e:
+            print(f"[MORAI] get_available_obstacle_models failed: {e}")
+            return []
+
+        if objects is None:
+            return []
+
+        return list(objects.obstacle)
+
+    def set_weather(self, weather_name):
+        if self.world is None:
+            raise RuntimeError("world is None. Call start_world() first.")
+
+        from proto.morai.environment.environment_enum_pb2 import (
+            WEATHER_TYPE_CLOUDY,
+            WEATHER_TYPE_FOGGY,
+            WEATHER_TYPE_RAINY,
+            WEATHER_TYPE_SNOWY,
+            WEATHER_TYPE_STORM,
+            WEATHER_TYPE_SUNNY,
+        )
+
+        weather_types = {
+            "SUNNY": WEATHER_TYPE_SUNNY,
+            "CLOUDY": WEATHER_TYPE_CLOUDY,
+            "FOGGY": WEATHER_TYPE_FOGGY,
+            "STORM": WEATHER_TYPE_STORM,
+            "RAINY": WEATHER_TYPE_RAINY,
+            "SNOWY": WEATHER_TYPE_SNOWY,
+        }
+        key = str(weather_name).strip().upper()
+        if key not in weather_types:
+            raise ValueError(
+                f"Unsupported weather: {weather_name}. "
+                f"Choose one of {sorted(weather_types)}"
+            )
+
+        self.world.set_weather(weather_types[key])
+        current = self.world.get_weather()
+        ok = current == weather_types[key]
+        print(f"[MORAI] weather={key}, verified={ok}")
+        return ok
+
+    def get_time(self):
+        if self.world is None:
+            raise RuntimeError("world is None. Call start_world() first.")
+        return int(self.world.get_time())
+
+    def set_time(self, hour, data_only=False, instantly=True):
+        if self.world is None:
+            raise RuntimeError("world is None. Call start_world() first.")
+
+        hour = int(hour)
+        if hour < 0 or hour > 23:
+            raise ValueError(f"MORAI simulation hour must be 0..23: {hour}")
+
+        from proto.morai.environment.time_pb2 import SimulationTime
+
+        request = SimulationTime()
+        request.hour = hour
+        request.data_only = bool(data_only)
+        request.instantly = bool(instantly)
+        self.world._sim_adapter.set_env_time(request)
+
+        # SetTime may be applied one or two frames after the RPC returns.
+        import time
+
+        deadline = time.monotonic() + 1.5
+        current = self.get_time()
+        while current != hour and time.monotonic() < deadline:
+            time.sleep(0.1)
+            current = self.get_time()
+
+        ok = current == hour
+        print(f"[MORAI] time={hour:02d}:00, verified={ok}")
+        return ok
+
+    def spawn_obstacle(self, transform, model_name, label, scale=None):
+        if self.world is None:
+            raise RuntimeError("world is None. Call start_world() first.")
+
+        obstacle = self.world.spawn_obstacle(
+            transform=transform,
+            model_name=model_name,
+            label=label,
+            scale=scale,
+        )
+        print(
+            f"[Spawn] obstacle {label}, model={model_name}: "
+            f"{obstacle is not None}"
+        )
+        return obstacle
 
     def get_available_objects(self):
         from proto.morai.simulator.category_obstacles_pb2 import CategoryObstacles

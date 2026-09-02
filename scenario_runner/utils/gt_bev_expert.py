@@ -33,6 +33,8 @@ class GTBEVExpertController:
         traffic_light_control=True,
         python_executable=None,
         ros_remaps=None,
+        is_closed_path=False,
+        velocity_profile_window_size=None,
     ):
         self.repo_path = os.path.abspath(repo_path)
         self.map_name = map_name
@@ -44,6 +46,8 @@ class GTBEVExpertController:
         self.traffic_light_control = bool(traffic_light_control)
         self.python_executable = python_executable or sys.executable
         self.ros_remaps = list(ros_remaps or [])
+        self.is_closed_path = bool(is_closed_path)
+        self.velocity_profile_window_size = velocity_profile_window_size
         self.process = None
 
         self._validate_repo()
@@ -86,7 +90,12 @@ class GTBEVExpertController:
         config["map"]["name"] = self.map_name
         config["map"]["use_mgeo_path"] = False
         config["map"]["traffic_light_control"] = self.traffic_light_control
+        config["map"]["is_closed_path"] = self.is_closed_path
         config["planning"]["velocity_profile"]["max_velocity"] = self.max_velocity_kmh
+        if self.velocity_profile_window_size is not None:
+            config["planning"]["velocity_profile"]["window_size"] = int(
+                self.velocity_profile_window_size
+            )
 
         self.runtime_config_path = os.path.join(runtime_dir, "config.json")
         with open(self.runtime_config_path, "w", encoding="utf-8") as f:
