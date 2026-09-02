@@ -41,6 +41,57 @@ def _load_json(path):
         return json.load(f)
 
 
+class NodeTrafficLightStoplineMapper(object):
+    """Build a traffic-light-to-stop-point map directly from MGeo v3 nodes.
+
+    The newer KATRI map stores the applicable signal ID on each road node.  A
+    node with both ``on_stop_line`` and ``traffic_light_id`` is therefore a
+    lane-centre stop target; no traffic-light pole position or stop-line
+    marking geometry is required for longitudinal control.
+    """
+
+    def __init__(self, map_dir):
+        self.map_dir = os.path.abspath(map_dir)
+        node_set = _load_json(os.path.join(self.map_dir, "node_set.json"))
+
+        self._stop_points = {}
+        self._node_count = 0
+        for node in node_set:
+            if not node.get("on_stop_line"):
+                continue
+
+            signal_id = node.get("traffic_light_id")
+            point = node.get("point", [])
+            if signal_id is None or str(signal_id).strip() == "" or len(point) < 2:
+                continue
+
+            signal_id = str(signal_id)
+            target = {
+                "idx": str(node.get("idx", "")),
+                "point": [float(point[0]), float(point[1])]
+                + ([float(point[2])] if len(point) >= 3 else []),
+                "traffic_light_id": signal_id,
+            }
+            self._stop_points.setdefault(signal_id, []).append(target)
+            self._node_count += 1
+
+    def has_mapping(self, traffic_light_idx):
+        return str(traffic_light_idx) in self._stop_points
+
+    def get_stop_points(self, traffic_light_idx):
+        return list(self._stop_points.get(str(traffic_light_idx), []))
+
+    def mapped_signal_ids(self):
+        return list(self._stop_points.keys())
+
+    @property
+    def stop_node_count(self):
+        return self._node_count
+
+    def __len__(self):
+        return len(self._stop_points)
+
+
 def _point_key(point):
     if len(point) < 2:
         return None

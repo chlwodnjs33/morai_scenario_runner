@@ -26,6 +26,7 @@ from morai_msgs.msg import EgoVehicleStatus, GetTrafficLightStatus, ObjectStatus
 from nav_msgs.msg import OccupancyGrid
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import Image
+from geometry_msgs.msg import Point as RosPoint
 from cv_bridge import CvBridge
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -246,6 +247,72 @@ def render_lanes(lane_set, ego_x, ego_y, yaw):
             key = "white_dashed" if "Broken" in shape else "white_solid"
         cv2.polylines(imgs[key], [pix.reshape(-1, 1, 2)], False, 1, thickness=thick)
     return {k: (v > 0).astype(np.uint8) for k, v in imgs.items()}
+
+
+def find_current_link(link_set, ego_x, ego_y, ego_yaw):
+    """기존 map_to_local 좌표계에서 Ego 원점과 가장 가까운 주행 링크를 찾는다."""
+    best_link = None
+    best_score = float("inf")
+
+    for link in link_set:
+        pts_raw = link.get("points", [])
+        if len(pts_raw) < 2:
+            continue
+        map_pts = np.asarray([[p[0], p[1]] for p in pts_raw], dtype=np.float64)
+        # 기존 BEV의 모든 지도/객체 렌더링과 동일한 변환을 사용한다.
+        # MGeo local ENU -> Ego base_link (x: forward, y: left)
+        local_pts = map_to_local(map_pts, ego_x, ego_y, ego_yaw)
+        starts = local_pts[:-1]
+        segments = local_pts[1:] - starts
+        lengths_sq = np.einsum("ij,ij->i", segments, segments)
+        valid = lengths_sq > 1e-9
+        if not np.any(valid):
+            continue
+
+        starts = starts[valid]
+        segments = segments[valid]
+        lengths_sq = lengths_sq[valid]
+        t = np.clip(-np.einsum("ij,ij->i", starts, segments) / lengths_sq, 0.0, 1.0)
+        projections = starts + segments * t[:, None]
+        distance_sq = np.einsum("ij,ij->i", projections, projections)
+        seg_idx = int(np.argmin(distance_sq))
+
+        local_seg_dir = segments[seg_idx] / math.sqrt(lengths_sq[seg_idx])
+        # local +x가 Ego 전방이다. 거리를 우선하고 링크 방향은 tie-break에만 쓴다.
+        heading_penalty = 0.5 * max(0.0, 1.0 - float(local_seg_dir[0]))
+        score = math.sqrt(float(distance_sq[seg_idx])) + heading_penalty
+        if score < best_score:
+            best_score = score
+            best_link = link
+
+    return best_link
+
+
+def get_ego_lane_links(current_link, link_by_id):
+    """현재/좌/우 링크를 시각화 이름과 함께 반환한다."""
+    result = {"current": current_link, "left": None, "right": None}
+    if current_link is None:
+        return result
+    result["left"] = link_by_id.get(current_link.get("left_lane_change_dst_link_idx"))
+    result["right"] = link_by_id.get(current_link.get("right_lane_change_dst_link_idx"))
+    return result
+
+
+def render_ego_lane_points(lane_links, ego_x, ego_y, yaw):
+    """현재/좌/우 링크 중심선 샘플 좌표를 각각 별도 binary image로 만든다."""
+    imgs = {name: np.zeros((SIZE, SIZE), dtype=np.uint8) for name in lane_links}
+    for name, link in lane_links.items():
+        if link is None:
+            continue
+        pts = np.asarray([[p[0], p[1]] for p in link.get("points", [])], dtype=np.float64)
+        if len(pts) == 0:
+            continue
+        local = map_to_local(pts, ego_x, ego_y, yaw)
+        pix = local_to_pixel(local)
+        for (lx, ly), (px, py) in zip(local, pix):
+            if in_crop(lx, ly):
+                cv2.circle(imgs[name], (int(px), int(py)), 2, 1, thickness=-1)
+    return imgs
 
 
 def _render_obj_list(objs, ego_x, ego_y, yaw):
@@ -498,6 +565,40 @@ def make_ego_cube_marker(stamp, rear_to_center):
     return ma
 
 
+def make_lane_point_markers(lane_links, ego_x, ego_y, yaw, stamp):
+    """현재/좌/우 링크 중심선 좌표를 base_link 기준 RViz POINTS로 발행한다."""
+    colors = {
+        "current": (0.1, 1.0, 0.1),
+        "left": (0.2, 0.6, 1.0),
+        "right": (1.0, 0.2, 0.8),
+    }
+    markers = MarkerArray()
+    for marker_id, name in enumerate(("current", "left", "right")):
+        marker = Marker()
+        marker.header.stamp = stamp
+        marker.header.frame_id = "base_link"
+        marker.ns = "ego_lane_points"
+        marker.id = marker_id
+        marker.type = Marker.POINTS
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.45
+        marker.scale.y = 0.45
+        marker.lifetime = rospy.Duration(0.2)
+        marker.color.r, marker.color.g, marker.color.b = colors[name]
+        marker.color.a = 1.0
+
+        link = lane_links.get(name)
+        if link is not None:
+            pts = np.asarray([[p[0], p[1]] for p in link.get("points", [])], dtype=np.float64)
+            if len(pts):
+                local = map_to_local(pts, ego_x, ego_y, yaw)
+                marker.points = [RosPoint(x=float(x), y=float(y), z=0.15)
+                                 for x, y in local if in_crop(x, y)]
+        markers.markers.append(marker)
+    return markers
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. 시각화 이미지
 # ══════════════════════════════════════════════════════════════════════════════
@@ -516,9 +617,13 @@ _VIZ_COLORS = {
     "tl_yellow":    (  0, 220, 255),
     "tl_green":     (  0, 220,   0),
     "tl_blue":      (255,   0,   0),
+    "current_link": ( 40, 255,  40),
+    "left_link":    (255, 150,  30),
+    "right_link":   (220,  40, 255),
 }
 
-def make_viz_image(drivable, lanes, vehicle, pedestrian, crosswalk_img, stoplines):
+def make_viz_image(drivable, lanes, vehicle, pedestrian, crosswalk_img, stoplines,
+                   ego_lane_points=None, ego_lane_links=None):
     viz = np.full((SIZE, SIZE, 3), _VIZ_COLORS["background"], dtype=np.uint8)
     viz[drivable                == 1] = _VIZ_COLORS["drivable"]
     viz[crosswalk_img           == 1] = _VIZ_COLORS["crosswalk"]
@@ -532,8 +637,22 @@ def make_viz_image(drivable, lanes, vehicle, pedestrian, crosswalk_img, stopline
     viz[stoplines["blue"]       == 1] = _VIZ_COLORS["tl_blue"]
     viz[pedestrian              == 1] = _VIZ_COLORS["pedestrian"]
     viz[vehicle                 == 1] = _VIZ_COLORS["vehicle"]
+    if ego_lane_points is not None:
+        viz[ego_lane_points["left"]    == 1] = _VIZ_COLORS["left_link"]
+        viz[ego_lane_points["right"]   == 1] = _VIZ_COLORS["right_link"]
+        viz[ego_lane_points["current"] == 1] = _VIZ_COLORS["current_link"]
     viz = cv2.rotate(viz, cv2.ROTATE_90_CLOCKWISE)
     viz = cv2.flip(viz, 0)
+    if ego_lane_links is not None:
+        labels = (
+            ("CURRENT", ego_lane_links.get("current"), _VIZ_COLORS["current_link"]),
+            ("LEFT", ego_lane_links.get("left"), _VIZ_COLORS["left_link"]),
+            ("RIGHT", ego_lane_links.get("right"), _VIZ_COLORS["right_link"]),
+        )
+        for row, (name, link, color) in enumerate(labels):
+            link_id = link.get("idx") if link is not None else "NONE"
+            cv2.putText(viz, "%s: %s" % (name, link_id), (5, 16 + row * 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
     return viz
 
 
@@ -558,6 +677,7 @@ class BEVMapGenerator:
         self.synced_traffic_light_set = load_json(os.path.join(MAP_DIR, "synced_traffic_light_set.json"))
         self.stopline_set       = load_json(os.path.join(MAP_DIR, "stoplane_marking_set.json"))
         self.link_set           = load_json(os.path.join(MAP_DIR, "link_set.json"))
+        self.link_by_id         = {link.get("idx"): link for link in self.link_set}
         self.node_set           = load_json(os.path.join(MAP_DIR, "node_set.json"))
         self.synced_signal_map  = build_synced_signal_map(self.synced_traffic_light_set)
         self.traffic_stopline_map = build_traffic_stopline_map(
@@ -585,6 +705,7 @@ class BEVMapGenerator:
         self.pub_stopline_green  = rospy.Publisher("/bev/stopline_green",  OccupancyGrid, queue_size=1)
         self.pub_stopline_blue   = rospy.Publisher("/bev/stopline_blue",   OccupancyGrid, queue_size=1)
         self.pub_ego_marker = rospy.Publisher("/bev/ego_marker", MarkerArray,   queue_size=1)
+        self.pub_lane_points = rospy.Publisher("/bev/ego_lane_points", MarkerArray, queue_size=1)
         self.pub_viz        = rospy.Publisher("/bev/viz",        Image,         queue_size=1)
 
         rospy.Subscriber("/Ego_topic",    EgoVehicleStatus, self._ego_cb, queue_size=1)
@@ -637,6 +758,9 @@ class BEVMapGenerator:
         crosswalk_img  = render_crosswalks(self.crosswalk_set, ego_x, ego_y, yaw)
         stoplines      = render_signal_stoplines(
             self.traffic_stopline_map, traffic_light_status, ego_x, ego_y, yaw)
+        current_link   = find_current_link(self.link_set, ego_x, ego_y, yaw)
+        ego_lane_links = get_ego_lane_links(current_link, self.link_by_id)
+        ego_lane_points = render_ego_lane_points(ego_lane_links, ego_x, ego_y, yaw)
 
         self.pub_drivable.publish(  make_grid(drivable_img,   stamp))
         self.pub_lane.publish(      make_grid(lane_img,       stamp))
@@ -648,8 +772,12 @@ class BEVMapGenerator:
         self.pub_stopline_green.publish( make_grid(stoplines["green"],  stamp))
         self.pub_stopline_blue.publish(  make_grid(stoplines["blue"],   stamp))
         self.pub_ego_marker.publish(make_ego_cube_marker(stamp, self.ego_rear_to_center))
+        self.pub_lane_points.publish(
+            make_lane_point_markers(ego_lane_links, ego_x, ego_y, yaw, stamp))
 
-        viz = make_viz_image(drivable_img, lanes, vehicle_img, pedestrian_img, crosswalk_img, stoplines)
+        viz = make_viz_image(
+            drivable_img, lanes, vehicle_img, pedestrian_img, crosswalk_img,
+            stoplines, ego_lane_points, ego_lane_links)
         self.pub_viz.publish(self.bridge.cv2_to_imgmsg(viz, encoding="bgr8"))
         cv2.imshow("BEV Segmentation Map", viz)
         cv2.waitKey(1)

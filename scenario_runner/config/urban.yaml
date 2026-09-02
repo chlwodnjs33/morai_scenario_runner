@@ -3,7 +3,11 @@ scenarios:
   basic_drive:
     start_link: A219BS010404
     end_link: A219BS010469
-    randomize_links: true
+    global_path_file: third_party/GT_BEV/.runtime/scenario_runner/path.csv
+    global_path_z_is_absolute: false
+    global_path_validate_mgeo: false
+    global_path_mgeo_tolerance_m: 2.0
+    randomize_links: false
     zone_links_path: scenario_runner/config/urban_links.yaml
     allow_connector_links: false
     random_route_stay_in_zone: true
@@ -19,13 +23,14 @@ scenarios:
     drive_control_mode: gt_bev_external
     gt_bev_repo_path: third_party/GT_BEV
     gt_bev_map_name: R_KR_PG_KATRI
+    gt_bev_traffic_map_dir: third_party/GT_BEV/map_data/R_KR_PG_KATRI_2025
     gt_bev_max_velocity_kmh: 60.0
     gt_bev_traffic_light_control: false
     gt_bev_ros_remaps:
-      - /ctrl_cmd:=/ctrl_cmd_0
+      - /ctrl_cmd:=/ctrl_cmd
     gt_bev_arrival_stop_distance_m: 6.0
     gt_bev_max_cross_track_error_m: 10.0
-    ros_ctrl_cmd_topic: /ctrl_cmd_0
+    ros_ctrl_cmd_topic: /ctrl_cmd
     ros_ctrl_cmd_longitudinal_type: 1
     ros_route_path_topic: /scenario_route_path
     route_debug_enabled: true
@@ -41,6 +46,8 @@ scenarios:
     pure_pursuit_min_speed: 2.0
     pure_pursuit_arrival_stop_distance_m: 6.0
     pure_pursuit_max_cross_track_error_m: 10.0
+    reset_ego_motion_on_start: true
+    reset_ego_motion_wait_sec: 0.5
     ego_spawn_offset_m: 5.0
     goal_offset_from_end_m: 3.0
     use_ego_destination: false
@@ -82,7 +89,7 @@ scenarios:
     gt_bev_max_velocity_kmh: 50.0
     gt_bev_traffic_light_control: false
     gt_bev_ros_remaps:
-      - /ctrl_cmd:=/ctrl_cmd_0
+      - /ctrl_cmd:=/ctrl_cmd
     gt_bev_arrival_stop_distance_m: 6.0
     gt_bev_max_cross_track_error_m: 10.0
     ego_spawn_offset_m: 20.0
@@ -159,7 +166,7 @@ scenarios:
     gt_bev_max_velocity_kmh: 45.0
     gt_bev_traffic_light_control: false
     gt_bev_ros_remaps:
-      - /ctrl_cmd:=/ctrl_cmd_0
+      - /ctrl_cmd:=/ctrl_cmd
     gt_bev_arrival_stop_distance_m: 6.0
     gt_bev_max_cross_track_error_m: 10.0
     ego_spawn_offset_m: 15.0
@@ -217,7 +224,7 @@ scenarios:
     gt_bev_max_velocity_kmh: 30.0
     gt_bev_traffic_light_control: false
     gt_bev_ros_remaps:
-      - /ctrl_cmd:=/ctrl_cmd_0
+      - /ctrl_cmd:=/ctrl_cmd
     gt_bev_arrival_stop_distance_m: 6.0
     gt_bev_max_cross_track_error_m: 10.0
     ego_spawn_offset_m: 5.0

@@ -19,6 +19,7 @@ class MoraiSimClient:
 
         self._available_maps = []
         self._available_objects = []
+        self._simulation_world = None
 
 
     def connect(self, addr, port):
@@ -34,7 +35,8 @@ class MoraiSimClient:
 
 
     def finalize(self):
-        self._simulation_world.finalize()
+        if self._simulation_world is not None:
+            self._simulation_world.finalize()
         self._simulation_world = None
         self._available_maps.clear()
         self.disconnect()
@@ -121,8 +123,14 @@ class MoraiSimClient:
             ego_id = ego_setting.ego_id
             ego_label = ego_setting.label
 
-        response = self._sim_adapter.start(start_param)        
+        response = self._sim_adapter.start(start_param)
+        if response is None:
+            raise RuntimeError("MORAI Start RPC returned no response")
         if (response.status == STATUS_CODE_SUCCESS) or (response.description == 'same map'):
             self._simulation_world = SimulationWorld(self._sim_adapter, self._client_key, map_name, 
                                                      init_sync_mode, ego_id, ego_label)
-        
+        else:
+            raise RuntimeError(
+                "MORAI Start RPC rejected the request: "
+                f"status={response.status}, description={response.description!r}"
+            )

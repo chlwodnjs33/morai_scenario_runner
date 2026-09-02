@@ -3,6 +3,7 @@
 import rospy
 import tf
 import numpy as np
+import time
 from nav_msgs.msg import Path, Odometry
 from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from morai_msgs.msg import EgoVehicleStatus, ObjectStatusList, CtrlCmd, GetTrafficLightStatus, SetTrafficLight
@@ -124,5 +125,10 @@ class RosManager:
         else:
             traffic_light_status = data.trafficLightStatus
 
-        self.traffic_light = [data.trafficLightIndex, traffic_light_status]
+        self.traffic_light = [
+            data.trafficLightIndex,
+            traffic_light_status,
+            data.trafficLightType,
+            time.monotonic(),
+        ]
         self.is_traffic_light = True

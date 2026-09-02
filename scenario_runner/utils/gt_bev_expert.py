@@ -2,7 +2,6 @@ import csv
 import json
 import os
 import signal
-import shutil
 import subprocess
 import sys
 
@@ -33,6 +32,8 @@ class GTBEVExpertController:
         traffic_light_control=True,
         python_executable=None,
         ros_remaps=None,
+        fixed_path_csv=None,
+        traffic_map_dir=None,
     ):
         self.repo_path = os.path.abspath(repo_path)
         self.map_name = map_name
@@ -44,6 +45,10 @@ class GTBEVExpertController:
         self.traffic_light_control = bool(traffic_light_control)
         self.python_executable = python_executable or sys.executable
         self.ros_remaps = list(ros_remaps or [])
+        self.fixed_path_csv = (
+            os.path.abspath(fixed_path_csv) if fixed_path_csv else None
+        )
+        self.traffic_map_dir = os.path.abspath(traffic_map_dir or mgeo_root)
         self.process = None
 
         self._validate_repo()
@@ -64,12 +69,20 @@ class GTBEVExpertController:
         runtime_dir = os.path.join(self.repo_path, ".runtime", "scenario_runner")
         os.makedirs(runtime_dir, exist_ok=True)
 
-        self.runtime_path_csv = os.path.join(runtime_dir, "path.csv")
-        with open(self.runtime_path_csv, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["x", "y"])
-            for point in self.route_points:
-                writer.writerow([float(point[0]), float(point[1])])
+        if self.fixed_path_csv:
+            if not os.path.isfile(self.fixed_path_csv):
+                raise FileNotFoundError(
+                    f"Fixed GT_BEV path CSV not found: {self.fixed_path_csv}"
+                )
+            self.runtime_path_csv = self.fixed_path_csv
+            print(f"[GT_BEV] using fixed path CSV without rewriting: {self.runtime_path_csv}")
+        else:
+            self.runtime_path_csv = os.path.join(runtime_dir, "path.csv")
+            with open(self.runtime_path_csv, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["x", "y"])
+                for point in self.route_points:
+                    writer.writerow([float(point[0]), float(point[1])])
 
         self.runtime_path_txt = os.path.join(runtime_dir, "path_scenario_runner_current.txt")
         with open(self.runtime_path_txt, "w") as f:
@@ -84,6 +97,7 @@ class GTBEVExpertController:
             config = json.load(f)
 
         config["map"]["name"] = self.map_name
+        config["map"]["data_dir"] = self.traffic_map_dir
         config["map"]["use_mgeo_path"] = False
         config["map"]["traffic_light_control"] = self.traffic_light_control
         config["planning"]["velocity_profile"]["max_velocity"] = self.max_velocity_kmh
@@ -93,21 +107,34 @@ class GTBEVExpertController:
             json.dump(config, f, indent=2)
             f.write("\n")
 
-        self._prepare_mgeo_signal_file()
+        self._validate_traffic_map_data()
         print(f"[GT_BEV] runtime config exported: {self.runtime_config_path}")
-        print(f"[GT_BEV] route path exported: {self.runtime_path_csv}, points={len(self.route_points)}")
+        if self.fixed_path_csv:
+            print(
+                f"[GT_BEV] fixed route path selected: "
+                f"{self.runtime_path_csv}, points={len(self.route_points)}"
+            )
+        else:
+            print(
+                f"[GT_BEV] route path exported: "
+                f"{self.runtime_path_csv}, points={len(self.route_points)}"
+            )
         print(f"[GT_BEV] visualization path exported: {self.runtime_path_txt}")
 
-    def _prepare_mgeo_signal_file(self):
-        src = os.path.join(self.mgeo_root, "traffic_light_set.json")
-        if not os.path.exists(src):
-            print(f"[GT_BEV] traffic_light_set.json not found, skip: {src}")
-            return
-
-        dst_dir = os.path.join(self.repo_path, "src", self.map_name)
-        os.makedirs(dst_dir, exist_ok=True)
-        dst = os.path.join(dst_dir, "traffic_light_set.json")
-        shutil.copyfile(src, dst)
+    def _validate_traffic_map_data(self):
+        required_files = ("global_info.json", "link_set.json", "node_set.json")
+        missing = [
+            name
+            for name in required_files
+            if not os.path.isfile(os.path.join(self.traffic_map_dir, name))
+        ]
+        if missing:
+            raise FileNotFoundError(
+                "GT_BEV traffic map data is incomplete: dir={}, missing={}".format(
+                    self.traffic_map_dir, ", ".join(missing)
+                )
+            )
+        print(f"[GT_BEV] direct traffic map data: {self.traffic_map_dir}")
 
     def start_process(self):
         if self.process is not None and self.process.poll() is None:
@@ -122,6 +149,7 @@ class GTBEVExpertController:
         )
         env["GT_BEV_CONFIG_PATH"] = self.runtime_config_path
         env["GT_BEV_PATH_CSV"] = self.runtime_path_csv
+        env["GT_BEV_MAP_DIR"] = self.traffic_map_dir
         env["SCENARIO_ROUTE_PATH_TXT"] = self.runtime_path_txt
 
         cmd = [

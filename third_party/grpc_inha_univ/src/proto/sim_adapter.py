@@ -154,8 +154,13 @@ class SimAdapter:
         response = None
         try:
             response = self._simulation_stub.Start(start_param)
+        except grpc.RpcError as e:
+            print(
+                "start failed: "
+                f"code={e.code().name}, details={e.details()}"
+            )
         except BaseException as e:
-            print(f'start failed : {e}')
+            print(f'start failed: {type(e).__name__}: {e}')
 
         return response
 

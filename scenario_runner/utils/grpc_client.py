@@ -1,4 +1,6 @@
 import os
+import socket
+import struct
 import sys
 
 
@@ -17,7 +19,7 @@ class MoraiGrpcClient:
         grpc_cfg = global_cfg["grpc"]
         path_cfg = global_cfg["paths"]
 
-        self.host = grpc_cfg.get("host", "172.19.0.55")
+        self.host = str(grpc_cfg.get("host", "auto"))
         self.port = int(grpc_cfg.get("port", 7789))
         self.client_key = grpc_cfg.get("client_key", "scenario_runner")
         self.grpc_src = path_cfg["grpc_src"]
@@ -60,12 +62,61 @@ class MoraiGrpcClient:
         Map._scenario_runner_mgeo_fetch_disabled = True
 
     def connect(self):
-        self.client.connect(self.host, self.port)
+        import grpc
 
-        if not self.client.is_connected():
-            raise RuntimeError("Failed to connect MORAI gRPC server")
+        requested_host = self.host.strip()
+        candidates = [] if requested_host.lower() == "auto" else [requested_host]
 
-        print(f"[gRPC] connected to {self.host}:{self.port}")
+        wsl_host = self._get_wsl_host_ip()
+        if wsl_host and wsl_host not in candidates:
+            candidates.append(wsl_host)
+
+        if not candidates:
+            candidates.append("127.0.0.1")
+
+        errors = []
+        for host in candidates:
+            self.client.connect(host, self.port)
+            channel = self.client._sim_adapter._channel
+            try:
+                grpc.channel_ready_future(channel).result(timeout=3.0)
+            except grpc.FutureTimeoutError:
+                errors.append(f"{host}:{self.port} (timeout)")
+                self.client.disconnect()
+                continue
+
+            self.host = host
+            print(f"[gRPC] connected to {self.host}:{self.port}")
+            return
+
+        tried = ", ".join(errors)
+        raise RuntimeError(
+            "Failed to connect MORAI gRPC server. "
+            f"Tried: {tried}. Check MORAI Simulation > Network > gRPC (port {self.port})."
+        )
+
+    @staticmethod
+    def _get_wsl_host_ip():
+        """Return the Windows host address from WSL2's default route."""
+        if sys.platform != "linux" or "microsoft" not in os.uname().release.lower():
+            return None
+
+        try:
+            with open("/proc/net/route", "r", encoding="ascii") as route_file:
+                next(route_file, None)
+                for line in route_file:
+                    fields = line.split()
+                    if len(fields) < 4 or fields[1] != "00000000":
+                        continue
+                    if not (int(fields[3], 16) & 0x2):
+                        continue
+                    return socket.inet_ntoa(
+                        struct.pack("<L", int(fields[2], 16))
+                    )
+        except (OSError, ValueError, struct.error):
+            return None
+
+        return None
 
     def make_transform(self, x, y, z, yaw_deg):
         from proto.morai.common.type_pb2 import Transform

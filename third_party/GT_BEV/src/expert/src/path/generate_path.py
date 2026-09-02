@@ -66,4 +66,4 @@ def generate_path_txt(start_node, end_node, map_name='R_KR_PG_KATRI', output_pat
 
 
 if __name__ == '__main__':
-    generate_path_txt('A119BS010235', 'A119BS010146')
+    generate_path_txt('A219BS010390', 'A219BS010094')

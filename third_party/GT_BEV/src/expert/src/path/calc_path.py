@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 
-### 
-import pandas as pd
-
 import json
 import io
 import os
@@ -42,10 +39,9 @@ class mgeo_dijkstra_path :
             self.y_list.append(path_y)
             self.z_list.append(0.)
 
-        path = pd.DataFrame({"x":self.x_list, "y":self.y_list, "z":self.z_list})
-
-        path_data = path.apply(
-            lambda point: Point(point["x"], point["y"]), axis=1
-        ).tolist()
+        path_data = [
+            Point(path_x, path_y)
+            for path_x, path_y in zip(self.x_list, self.y_list)
+        ]
 
         return path_data

@@ -3,6 +3,7 @@ import time
 import yaml
 import math
 import os
+import json
 
 from base_scenario import BaseScenario
 from utils.route_utils import build_route_between
@@ -24,7 +25,10 @@ class UrbanBasicDriveScenario(BaseScenario):
         self.ego_spawn_offset_m = self.cfg.get("ego_spawn_offset_m", 5.0)
         self.decision_range = self.cfg.get("decision_range_m", 100.0)
 
-        self.randomize_links = self.cfg.get("randomize_links", False)
+        self.global_path_file = self.cfg.get("global_path_file")
+        self.randomize_links = (
+            False if self.global_path_file else self.cfg.get("randomize_links", False)
+        )
         self.random = random.Random(self.cfg.get("random_seed"))
         self.zone_allowed_links = set()
         self.zone_route_links = self.load_zone_route_links()
@@ -124,12 +128,196 @@ class UrbanBasicDriveScenario(BaseScenario):
         return True, ""
 
     def select_route_for_next_drive(self):
+        if self.global_path_file:
+            self.prepare_global_path(self.global_path_file)
+            return
+
         if self.randomize_links:
             self.select_random_route()
         else:
             self.start_link = self.cfg["start_link"]
             self.end_link = self.cfg["end_link"]
             self.prepare_route()
+
+    @staticmethod
+    def resolve_external_path(path):
+        path = os.path.expandvars(os.path.expanduser(str(path)))
+        if os.path.exists(path):
+            return os.path.abspath(path)
+
+        # Windows 경로를 WSL에서 실행할 때 /mnt/<drive>/... 경로로 변환한다.
+        if os.name != "nt" and len(path) >= 3 and path[1] == ":" and path[2] in ("/", "\\"):
+            drive = path[0].lower()
+            relative = path[3:].replace("\\", "/")
+            wsl_path = os.path.join("/mnt", drive, relative)
+            if os.path.exists(wsl_path):
+                return os.path.abspath(wsl_path)
+
+        raise FileNotFoundError(f"Global path file not found: {path}")
+
+    def load_global_path_points(self, path):
+        resolved_path = self.resolve_external_path(path)
+        raw_points = []
+
+        with open(resolved_path, "r", encoding="utf-8") as f:
+            for line_number, line in enumerate(f, start=1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+
+                values = stripped.replace(",", " ").split()
+                if len(values) < 2:
+                    raise ValueError(
+                        f"Invalid global path row at {resolved_path}:{line_number}: {stripped!r}"
+                    )
+
+                try:
+                    x = float(values[0])
+                    y = float(values[1])
+                    z = float(values[2]) if len(values) >= 3 else 0.0
+                except ValueError as e:
+                    if (
+                        not raw_points
+                        and values[0].strip().lower() == "x"
+                        and values[1].strip().lower() == "y"
+                    ):
+                        continue
+                    raise ValueError(
+                        f"Invalid global path number at {resolved_path}:{line_number}: {stripped!r}"
+                    ) from e
+
+                raw_points.append((x, y, z))
+
+        if len(raw_points) < 2:
+            raise ValueError(f"Global path needs at least two points: {resolved_path}")
+
+        global_info_path = os.path.join(self.map_loader.mgeo_root, "global_info.json")
+        with open(global_info_path, "r", encoding="utf-8") as f:
+            global_info = json.load(f)
+
+        target_origin = global_info.get("local_origin_in_global")
+        if not isinstance(target_origin, list) or len(target_origin) < 3:
+            raise ValueError(f"MGeo local_origin_in_global is invalid: {global_info_path}")
+
+        source_east = float(self.cfg.get("global_path_source_east_offset", target_origin[0]))
+        source_north = float(self.cfg.get("global_path_source_north_offset", target_origin[1]))
+        x_offset = source_east - float(target_origin[0])
+        y_offset = source_north - float(target_origin[1])
+        z_is_absolute = bool(self.cfg.get("global_path_z_is_absolute", False))
+
+        points = []
+        for x, y, z in raw_points:
+            local_z = z - float(target_origin[2]) if z_is_absolute else z
+            point = (x + x_offset, y + y_offset, local_z)
+            if points and dist_xy(points[-1][0], points[-1][1], point[0], point[1]) < 1e-6:
+                continue
+            points.append(point)
+
+        print(f"[UrbanBasicDrive] fixed global path: {resolved_path}")
+        print(
+            f"[UrbanBasicDrive] path origin transform: "
+            f"dx={x_offset:.3f}, dy={y_offset:.3f}, "
+            f"z={'absolute->local' if z_is_absolute else 'local'}"
+        )
+        return points, resolved_path
+
+    def nearest_mgeo_link(self, x, y):
+        if not hasattr(self, "_mgeo_link_point_cache"):
+            self._mgeo_link_point_cache = [
+                (link_id, point)
+                for link_id, link in self.map_loader.link_set.items()
+                for point in link.get("points", [])
+            ]
+
+        best_link = None
+        best_point = None
+        best_distance = float("inf")
+        for link_id, point in self._mgeo_link_point_cache:
+            distance = dist_xy(x, y, point[0], point[1])
+            if distance < best_distance:
+                best_link = link_id
+                best_point = point
+                best_distance = distance
+
+        return best_link, best_point, best_distance
+
+    def prepare_global_path(self, path):
+        self.route_points, self.global_path_resolved = self.load_global_path_points(path)
+        self.route_length_m = polyline_length(self.route_points)
+        self.pure_pursuit_last_s = 0.0
+
+        sample_count = min(25, len(self.route_points))
+        sample_indices = sorted({
+            round(i * (len(self.route_points) - 1) / max(1, sample_count - 1))
+            for i in range(sample_count)
+        })
+        sampled_links = []
+        max_sample_distance = 0.0
+        start_link, _, start_distance = self.nearest_mgeo_link(
+            self.route_points[0][0],
+            self.route_points[0][1],
+        )
+        for index in sample_indices:
+            point = self.route_points[index]
+            link_id, _, distance = self.nearest_mgeo_link(point[0], point[1])
+            max_sample_distance = max(max_sample_distance, distance)
+            if link_id is not None and (not sampled_links or sampled_links[-1] != link_id):
+                sampled_links.append(link_id)
+
+        tolerance = float(self.cfg.get("global_path_mgeo_tolerance_m", 2.0))
+        validate_mgeo = bool(self.cfg.get("global_path_validate_mgeo", True))
+        if validate_mgeo and start_distance > tolerance:
+            raise ValueError(
+                "Global path start does not match the configured MGeo map after origin conversion: "
+                f"start_distance={start_distance:.2f}m, tolerance={tolerance:.2f}m"
+            )
+        if validate_mgeo and max_sample_distance > tolerance:
+            print(
+                f"[UrbanBasicDrive] global path MGeo coverage warning: "
+                f"sample_max_distance={max_sample_distance:.2f}m "
+                f"(some path sections have no nearby MGeo link centerline)"
+            )
+        elif not validate_mgeo:
+            print(
+                "[UrbanBasicDrive] MGeo alignment validation disabled; "
+                "using path coordinates exactly as stored"
+            )
+
+        self.route_links = sampled_links
+        self.start_link = start_link or (sampled_links[0] if sampled_links else "GLOBAL_PATH_START")
+        self.end_link = sampled_links[-1] if sampled_links else "GLOBAL_PATH_END"
+        self.zone_allowed_links.update(sampled_links)
+
+        spawn_offset = min(max(0.0, float(self.ego_spawn_offset_m)), self.route_length_m)
+        x, y, z, yaw = interpolate_on_polyline(self.route_points, spawn_offset)
+        self.start_tf = self.grpc.make_transform(x, y, z, yaw)
+
+        goal_offset_from_end_m = float(self.cfg.get("goal_offset_from_end_m", 3.0))
+        goal_s = max(0.0, self.route_length_m - goal_offset_from_end_m)
+        self.goal_x, self.goal_y, self.goal_z, self.goal_yaw = interpolate_on_polyline(
+            self.route_points,
+            goal_s,
+        )
+        self.route_waypoint_indices = []
+
+        closed_distance = dist_xy(
+            self.route_points[0][0],
+            self.route_points[0][1],
+            self.route_points[-1][0],
+            self.route_points[-1][1],
+        )
+        print(
+            f"[UrbanBasicDrive] fixed path loaded: points={len(self.route_points)}, "
+            f"length={self.route_length_m:.1f}m, max_gap={self.max_route_point_gap(self.route_points):.2f}m, "
+            f"closed_gap={closed_distance:.3f}m, mgeo_sample_max={max_sample_distance:.2f}m"
+        )
+        print(
+            f"[UrbanBasicDrive] fixed path start=({x:.3f}, {y:.3f}, {z:.3f}, yaw={yaw:.3f}), "
+            f"goal=({self.goal_x:.3f}, {self.goal_y:.3f}, {self.goal_z:.3f})"
+        )
+
+        if self.cfg.get("route_debug_enabled", False):
+            self.dump_route_debug()
 
     def select_random_route(self):
         if self.cfg.get("random_route_pool_enabled", False):
@@ -873,7 +1061,8 @@ class UrbanBasicDriveScenario(BaseScenario):
         cmd = self.ros_ctrl_cmd_msg_type()
         long_cmd_type = int(self.cfg.get("ros_ctrl_cmd_longitudinal_type", 1))
         cmd.longlCmdType = long_cmd_type
-        cmd.steering = float(steer)
+        cmd.front_steer = float(steer)
+        cmd.rear_steer = 0.0
 
         if brake_override is not None:
             cmd.accel = 0.0
@@ -919,8 +1108,18 @@ class UrbanBasicDriveScenario(BaseScenario):
             )
         )
         traffic_light_control = bool(self.cfg.get("gt_bev_traffic_light_control", True))
+        traffic_map_dir = self.cfg.get(
+            "gt_bev_traffic_map_dir",
+            self.global_cfg["paths"]["mgeo_root"],
+        )
+        if not os.path.isabs(traffic_map_dir):
+            traffic_map_dir = os.path.abspath(os.path.join(os.getcwd(), traffic_map_dir))
         ros_remaps = self.cfg.get("gt_bev_ros_remaps", [])
         python_executable = self.cfg.get("gt_bev_python_executable")
+        fixed_path_csv = None
+        global_path_resolved = getattr(self, "global_path_resolved", None)
+        if global_path_resolved and global_path_resolved.lower().endswith(".csv"):
+            fixed_path_csv = global_path_resolved
 
         self.gt_bev_expert = GTBEVExpertController(
             repo_path=repo_path,
@@ -933,6 +1132,8 @@ class UrbanBasicDriveScenario(BaseScenario):
             traffic_light_control=traffic_light_control,
             python_executable=python_executable,
             ros_remaps=ros_remaps,
+            fixed_path_csv=fixed_path_csv,
+            traffic_map_dir=traffic_map_dir,
         )
 
     def stop_gt_bev_expert_controller(self):

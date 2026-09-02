@@ -3,11 +3,11 @@
 from .obstacle.forward_object_detector import ForwardObjectDetector
 from .localization.path_manager import PathManager
 from .planning.adaptive_cruise_control import AdaptiveCruiseControl
+from .planning.traffic_light_stop import TrafficLightStopController
 from .control.pure_pursuit import PurePursuit
 from .control.pid import Pid
 from .control.control_input import ControlInput
 from .config.config import Config
-from .path.calc_path import mgeo_dijkstra_path
 
 import numpy as np
 
@@ -16,6 +16,9 @@ class AutonomousDriving:
         config = Config()
 
         if config["map"]["use_mgeo_path"]:
+            # pyproj를 포함한 MGeo loader는 내부 경로 생성 모드에서만 필요하다.
+            from .path.calc_path import mgeo_dijkstra_path
+
             mgeo_path = mgeo_dijkstra_path(config["map"]["name"])
             self.path = mgeo_path.calc_dijkstra_path(config["map"]["mgeo"]["start_node"], config["map"]["mgeo"]["end_node"])
             self.path_manager = PathManager(
@@ -28,6 +31,13 @@ class AutonomousDriving:
             )
         self.path_manager.set_velocity_profile(**config['planning']['velocity_profile'])
 
+        self.traffic_light_stop_controller = TrafficLightStopController(
+            path=self.path,
+            stopline_mapper=config["map"]["stopline_mapper"],
+            is_closed_path=config["map"]["is_closed_path"],
+            **config['planning'].get('traffic_light_stop', {})
+        )
+
         self.forward_object_detector = ForwardObjectDetector(config["map"]["traffic_light_list"])
 
         self.adaptive_cruise_control = AdaptiveCruiseControl(
@@ -38,6 +48,7 @@ class AutonomousDriving:
             wheelbase=config['common']['wheelbase'], **config['control']['pure_pursuit']
         )
         self.max_steering = config['common']['max_steering'] / 180.0 * np.pi
+        self.steering_sign = float(config['common'].get('steering_sign', 1.0))
 
     def execute(self, vehicle_state, dynamic_object_list, current_traffic_light):
         # 현재 위치 기반으로 local path과 planned velocity 추출
@@ -50,6 +61,12 @@ class AutonomousDriving:
         # adaptive cruise control를 활용한 속도 계획
         self.adaptive_cruise_control.check_object(local_path, object_info_dic_list, current_traffic_light)
         target_velocity = self.adaptive_cruise_control.get_target_velocity(vehicle_state.velocity, planned_velocity)
+        signal_target_velocity = self.traffic_light_stop_controller.get_target_velocity(
+            current_traffic_light=current_traffic_light,
+            current_waypoint=self.path_manager.current_waypoint,
+            planned_velocity=planned_velocity,
+        )
+        target_velocity = min(target_velocity, signal_target_velocity)
         # 속도 제어를 위한 PID control
         acc_cmd = self.pid.get_output(target_velocity, vehicle_state.velocity)
         # target velocity가 0이고, 일정 속도 이하일 경우 full brake를 하여 차량을 멈추도록 함.
@@ -58,6 +75,9 @@ class AutonomousDriving:
         # 경로 추종을 위한 pure pursuit control
         self.pure_pursuit.path = local_path
         self.pure_pursuit.vehicle_state = vehicle_state
-        steering_cmd = self.pure_pursuit.calculate_steering_angle() / self.max_steering
+        steering_cmd = self.steering_sign * (
+            self.pure_pursuit.calculate_steering_angle() / self.max_steering
+        )
+        steering_cmd = float(np.clip(steering_cmd, -1.0, 1.0))
 
         return ControlInput(acc_cmd, steering_cmd), local_path
