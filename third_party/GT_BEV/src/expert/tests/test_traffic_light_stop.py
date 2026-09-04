@@ -11,7 +11,11 @@ from expert.src.planning.traffic_light_stop import TrafficLightStopController
 SRC_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "../.."))
 GT_BEV_ROOT = os.path.normpath(os.path.join(SRC_ROOT, ".."))
 MAP_DIR = os.path.join(GT_BEV_ROOT, "map_data", "R_KR_PG_KATRI_2025")
-PATH_CSV = os.path.join(GT_BEV_ROOT, ".runtime", "scenario_runner", "path.csv")
+PATH_CSV = os.path.join(GT_BEV_ROOT, ".runtime", "path.csv")
+if not os.path.exists(PATH_CSV):
+    PATH_CSV = os.path.join(
+        GT_BEV_ROOT, ".runtime", "scenario_runner", "path.csv"
+    )
 
 
 def load_path():

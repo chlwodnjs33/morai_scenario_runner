@@ -20,3 +20,14 @@ outputs/
 
 scenario_runner/config/local.yaml
 scenario_runner/debug_routes/
+
+# Local agent settings, raw reference inputs, and generated verification output.
+/.claude/
+/new data/
+/scenario_runner/verification_reports/
+/third_party/GT_BEV/src/expert/debug_output/*.log
+*:Zone.Identifier
+
+# Local work documents; README.md remains tracked.
+/FULL_LOOP_RUNBOOK.md
+/MORAI_SCENARIO_RUNNER_WORK_SUMMARY_2026-09-02.md

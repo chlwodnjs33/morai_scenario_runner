@@ -159,10 +159,8 @@ include_directories(
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
-catkin_install_python(PROGRAMS
-  scripts/main.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
+# The standalone entry point is <workspace>/main.py.  The code below this ROS
+# package is importable library code and does not install a duplicate launcher.
 
 ## Mark executables for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html

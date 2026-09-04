@@ -1,5 +1,7 @@
 import argparse
+import copy
 import os
+import time
 import yaml
 
 from utils.grpc_client import MoraiGrpcClient
@@ -12,6 +14,11 @@ from zones.urban_scenarios import (
     HighwayMergeJudgementScenario,
     RoundaboutMergeScenario,
     RoundaboutYieldToInsideVehicleScenario,
+)
+from zones.full_loop_scenario import (
+    FullLoopAfterStaticScenario,
+    FullLoopHighwayTunnelTestScenario,
+    FullLoopScenario,
 )
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,8 +44,13 @@ def main():
     print("[DEBUG] main() start")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--zone", default="urban")
-    parser.add_argument("--scenario", default="basic_drive")
+    parser.add_argument("--zone", default="full_loop")
+    parser.add_argument("--scenario", default="full_loop")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one scenario only even when auto_repeat is enabled",
+    )
     args = parser.parse_args()
 
     print(f"[DEBUG] args: zone={args.zone}, scenario={args.scenario}")
@@ -58,7 +70,16 @@ def main():
 
     zone_cfg = load_yaml(f"scenario_runner/config/{args.zone}.yaml")
 
-    scenario_cfg = zone_cfg["scenarios"][args.scenario]
+    full_loop_variants = {
+        "full_loop",
+        "full_loop_after_static",
+        "full_loop_highway_tunnel_test",
+    }
+    scenario_cfg_key = (
+        "full_loop" if args.scenario in full_loop_variants else args.scenario
+    )
+    base_scenario_cfg = copy.deepcopy(zone_cfg["scenarios"][scenario_cfg_key])
+    scenario_cfg = copy.deepcopy(base_scenario_cfg)
 
     print("[DEBUG] creating MoraiGrpcClient")
     grpc_client = MoraiGrpcClient(global_cfg)
@@ -69,7 +90,28 @@ def main():
     print("[DEBUG] loading MGeo")
     map_loader = MGeoMapLoader(global_cfg["paths"]["mgeo_root"])
 
-    if args.scenario == "basic_drive":
+    if args.scenario == "full_loop":
+        scenario = FullLoopScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.scenario == "full_loop_after_static":
+        scenario = FullLoopAfterStaticScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.scenario == "full_loop_highway_tunnel_test":
+        scenario = FullLoopHighwayTunnelTestScenario(
+            grpc_client=grpc_client,
+            map_loader=map_loader,
+            global_cfg=global_cfg,
+            scenario_cfg=scenario_cfg,
+        )
+    elif args.scenario == "basic_drive":
         scenario = UrbanBasicDriveScenario(
             grpc_client=grpc_client,
             map_loader=map_loader,
@@ -121,11 +163,37 @@ def main():
     else:
         raise ValueError(f"Unknown scenario: {args.zone}/{args.scenario}")
 
-    scenario.zone_name = zone_cfg.get("zone", args.zone)
+    scenario_class = type(scenario)
+    auto_repeat = (
+        args.scenario in ("full_loop", "full_loop_after_static")
+        and bool(base_scenario_cfg.get("auto_repeat", False))
+        and not args.once
+    )
+    repeat_delay_sec = float(base_scenario_cfg.get("repeat_delay_sec", 1.0))
+    run_number = 1
 
     try:
-        print("[DEBUG] running scenario")
-        scenario.run()
+        while True:
+            scenario.zone_name = zone_cfg.get("zone", args.zone)
+            print(f"[DEBUG] running scenario #{run_number}")
+            scenario.run()
+            if not auto_repeat:
+                break
+
+            run_number += 1
+            print(
+                f"[DEBUG] scenario complete; starting scenario #{run_number} "
+                f"in {repeat_delay_sec:.1f}s"
+            )
+            time.sleep(max(0.0, repeat_delay_sec))
+            scenario = scenario_class(
+                grpc_client=grpc_client,
+                map_loader=map_loader,
+                global_cfg=global_cfg,
+                scenario_cfg=copy.deepcopy(base_scenario_cfg),
+            )
+    except KeyboardInterrupt:
+        print("[DEBUG] Ctrl+C received; stopping automatic scenario sequence")
     finally:
         print("[DEBUG] stopping gRPC client")
         grpc_client.stop()

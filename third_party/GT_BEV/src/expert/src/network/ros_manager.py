@@ -10,6 +10,7 @@ from morai_msgs.msg import EgoVehicleStatus, ObjectStatusList, CtrlCmd, GetTraff
 from ..vehicle_state import VehicleState
 from ..obstacle.object_info import ObjectInfo
 from ..config.config import Config
+from ..planning.lattice_planning.rviz_visualizer import LatticeRvizVisualizer
 
 
 class RosManager:
@@ -52,6 +53,7 @@ class RosManager:
         self.ctrl_pub = rospy.Publisher('/ctrl_cmd', CtrlCmd, queue_size=1)
         self.traffic_light_pub = rospy.Publisher("/SetTrafficLight", SetTrafficLight, queue_size=1)
         self.odom_pub = rospy.Publisher('/odom', Odometry, queue_size=1)
+        self.lattice_visualizer = LatticeRvizVisualizer()
 
         # subscriber
         rospy.Subscriber("/Ego_topic", EgoVehicleStatus, self.vehicle_status_callback)
@@ -62,6 +64,15 @@ class RosManager:
         self.ctrl_pub.publish(CtrlCmd(**control_input.__dict__))
         self.local_path_pub.publish(self.convert_to_ros_path(local_path, 'map'))
         self.odom_pub.publish(self.convert_to_odometry(self.vehicle_state))
+        try:
+            self.lattice_visualizer.publish(
+                self.autonomous_driving.lattice_planning_process.last_result,
+                self.vehicle_state,
+                self.object_info_list,
+            )
+        except Exception as error:
+            # 시각화 오류가 차량 제어 루프를 중단시키지 않도록 제한 주기로 경고만 출력
+            rospy.logwarn_throttle(5.0, "Lattice RViz publish failed: %s", error)
 
         if self.count == self.sampling_rate:
             self.global_path_pub.publish(self.global_path)
@@ -107,10 +118,24 @@ class RosManager:
         self.is_status = True
 
     def object_info_callback(self, data):
-        self.object_info_list = [
-            ObjectInfo(data.position.x, data.position.y, data.velocity.x, data.type)
-            for data in data.npc_list + data.obstacle_list + data.pedestrian_list
-        ]
+        def convert_object(item, is_static=False):
+            return ObjectInfo(
+                item.position.x,
+                item.position.y,
+                item.velocity.x,
+                item.type,
+                name=item.name,
+                is_static=is_static,
+                size_x=item.size.x,
+                size_y=item.size.y,
+                heading_deg=item.heading,
+            )
+
+        self.object_info_list = (
+            [convert_object(item) for item in data.npc_list]
+            + [convert_object(item, is_static=True) for item in data.obstacle_list]
+            + [convert_object(item) for item in data.pedestrian_list]
+        )
         self.is_object_info = True
 
     def traffic_light_callback(self, data):

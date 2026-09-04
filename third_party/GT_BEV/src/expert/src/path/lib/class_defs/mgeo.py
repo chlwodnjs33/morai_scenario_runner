@@ -486,19 +486,21 @@ class MGeo():
         if os.path.exists(os.path.join(folder_path, 'global_info.mprj')):
             filename = os.path.join(folder_path, 'global_info.mprj')
         if not os.path.isfile(filename):
-
-            from save_load import subproc_load_link_ver1
-            node_set, link_set = subproc_load_link_ver1.load_node_and_link(node_save_info_list, line_save_info_list)
-
-            # ver1에서는 global_info가 없으므로, 직접 생성해준다
+            # Recent MORAI exports may provide v2-style node/link lists without
+            # global_info. Parse those lists with the v2 loader while staying
+            # below the version that requires a junction field on every node.
             global_info = {
-                'maj_ver': 1,
-                'min_ver': 0,
+                'maj_ver': 2,
+                'min_ver': 2,
                 'global_coordinate_system': '+proj=utm +zone=52 +datum=WGS84 +units=m +no_defs',
                 'local_origin_in_global': [0, 0, 0]
             }
 
-            return global_info, node_set, link_set
+            from save_load import subproc_load_link_ver2
+            node_set, link_set, junction_set = subproc_load_link_ver2.load_node_and_link(
+                node_save_info_list, line_save_info_list, global_info)
+
+            return global_info, node_set, link_set, junction_set
 
         # 읽을 버전 정보 파일이 있는 경우    
         with open(filename, 'r') as f:

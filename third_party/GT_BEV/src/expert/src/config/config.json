@@ -31,7 +31,8 @@
           "end_link_id": "A2256W000153",
           "max_velocity": 100.0
         }
-      ]
+      ],
+      "terminal_deceleration": 2.0
     },
     "adaptive_cruise_control": {
       "velocity_gain": 0.5,

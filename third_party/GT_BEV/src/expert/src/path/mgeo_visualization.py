@@ -16,8 +16,9 @@ sys.path.insert(0, os.path.normpath(os.path.join(current_path, 'lib')))
 from class_defs import MGeo
 
 # ── 설정 ──────────────────────────────────────────────
-MAP_NAME    = 'R_KR_PG_KATRI'
-DEFAULT_MGEO_ROOT = os.path.normpath(os.path.join(current_path, '../../../../' + MAP_NAME))
+MAP_NAME    = 'R_KR_PG_KATRI_2025'
+WORKSPACE_ROOT = os.path.normpath(os.path.join(current_path, '../../../../'))
+DEFAULT_MGEO_ROOT = os.path.join(WORKSPACE_ROOT, 'map_data', MAP_NAME)
 MGEO_ROOT = os.environ.get(
     'SCENARIO_MGEO_ROOT',
     DEFAULT_MGEO_ROOT,
@@ -62,7 +63,10 @@ def load_path_txt(filepath):
             line = line.strip()
             if line.startswith('#') or not line:
                 continue
-            x, y = map(float, line.split())
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            x, y = map(float, fields[:2])
             pts.append((x, y))
     return pts
 
@@ -72,11 +76,17 @@ def find_latest_path_file():
     if env_path and os.path.exists(env_path):
         return env_path
 
-    gt_bev_root = os.path.normpath(os.path.join(current_path, '../../../..'))
-    runtime_path = os.path.join(gt_bev_root, '.runtime', 'scenario_runner', 'path_scenario_runner_current.txt')
+    gt_bev_root = WORKSPACE_ROOT
+    runtime_path = os.path.join(gt_bev_root, '.runtime', 'current_path.txt')
     if os.path.exists(runtime_path):
         return runtime_path
 
+    official_path = os.path.join(MGEO_ROOT, '2026_molit_comp_global_path.txt')
+    if os.path.exists(official_path):
+        return official_path
+
+    # A legacy checkout may contain a tracked runtime path for an older map.
+    # Use it only when the current map has no official global path.
     preferred = os.path.join(current_path, 'path_scenario_runner_current.txt')
     if os.path.exists(preferred):
         return preferred
@@ -227,10 +237,19 @@ def main():
         if len(path_pts) >= 2:
             scr_path = world_to_screen(path_pts, offset, scale)
             pygame.draw.lines(screen, COLOR_PATH, False, scr_path.tolist(), 3)
-            pygame.draw.circle(screen, COLOR_START, scr_path[0],  8)
-            pygame.draw.circle(screen, COLOR_END,   scr_path[-1], 8)
-            screen.blit(font.render('START', True, COLOR_START), (scr_path[0][0] + 10, scr_path[0][1] - 8))
-            screen.blit(font.render('END', True, COLOR_END), (scr_path[-1][0] + 10, scr_path[-1][1] - 8))
+            closed_path = np.linalg.norm(
+                np.asarray(path_pts[0]) - np.asarray(path_pts[-1])
+            ) <= 0.5
+            if closed_path:
+                pygame.draw.circle(screen, COLOR_END, scr_path[0], 10)
+                pygame.draw.circle(screen, COLOR_START, scr_path[0], 6)
+                screen.blit(font.render('START/END', True, COLOR_TEXT),
+                            (scr_path[0][0] + 12, scr_path[0][1] - 8))
+            else:
+                pygame.draw.circle(screen, COLOR_START, scr_path[0], 8)
+                pygame.draw.circle(screen, COLOR_END, scr_path[-1], 8)
+                screen.blit(font.render('START', True, COLOR_START), (scr_path[0][0] + 10, scr_path[0][1] - 8))
+                screen.blit(font.render('END', True, COLOR_END), (scr_path[-1][0] + 10, scr_path[-1][1] - 8))
 
         # 차량 위치
         with vehicle_lock:

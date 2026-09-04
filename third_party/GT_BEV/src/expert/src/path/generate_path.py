@@ -5,6 +5,10 @@ import os
 import sys
 
 current_path = os.path.dirname(os.path.realpath(__file__))
+workspace_root = os.path.normpath(os.path.join(current_path, '../../../../'))
+default_map_dir = os.path.join(
+    workspace_root, 'map_data', 'R_KR_PG_KATRI_2025'
+)
 sys.path.insert(0, os.path.normpath(os.path.join(current_path, 'lib')))
 
 from class_defs import MGeo
@@ -13,9 +17,14 @@ sys.path.insert(0, current_path)
 from e_dijkstra import Dijkstra
 
 
-def generate_path_txt(start_node, end_node, map_name='R_KR_PG_KATRI', output_path=None):
+def generate_path_txt(start_node, end_node, map_name='R_KR_PG_KATRI_2025', output_path=None):
     # 지도 로드
-    load_path = os.path.normpath(os.path.join(current_path, '../../../../' + map_name))
+    load_path = os.environ.get(
+        'GT_BEV_MAP_DIR',
+        os.path.join(workspace_root, 'map_data', map_name),
+    )
+    if not os.path.isdir(load_path):
+        load_path = default_map_dir
     mgeo_planner_map = MGeo.create_instance_from_json(load_path)
 
     nodes = mgeo_planner_map.node_set.nodes
@@ -41,7 +50,11 @@ def generate_path_txt(start_node, end_node, map_name='R_KR_PG_KATRI', output_pat
 
     # 저장 경로 결정
     if output_path is None:
-        output_path = os.path.join(current_path, f'path_{start_node}_to_{end_node}.txt')
+        runtime_dir = os.path.join(workspace_root, '.runtime')
+        os.makedirs(runtime_dir, exist_ok=True)
+        output_path = os.path.join(
+            runtime_dir, f'path_{start_node}_to_{end_node}.txt'
+        )
 
     # .txt 파일 저장 (x y 형식, 한 줄에 하나)
     with open(output_path, 'w') as f:
@@ -54,9 +67,7 @@ def generate_path_txt(start_node, end_node, map_name='R_KR_PG_KATRI', output_pat
     print(f'총 waypoint 수: {len(path["point_path"])}')
 
     # path.csv 저장 (config에서 읽는 형식: x,y 헤더 포함)
-    csv_path = os.path.normpath(os.path.join(
-        current_path, '../config/map', map_name, 'path.csv'
-    ))
+    csv_path = os.path.join(workspace_root, '.runtime', 'path.csv')
     with open(csv_path, 'w') as f:
         f.write('x,y\n')
         for point in path['point_path']:

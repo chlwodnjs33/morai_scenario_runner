@@ -31,10 +31,21 @@ class Config(object):
         return getattr(self, key)
 
     def _set_map_data(self):
-        default_runtime_path = os.path.normpath(os.path.join(
+        workspace_root = os.path.normpath(os.path.join(
             os.path.dirname(__file__),
-            '../../../../.runtime/scenario_runner/path.csv',
+            '../../../../',
         ))
+        default_runtime_path = os.path.join(
+            workspace_root, '.runtime', 'path.csv'
+        )
+        legacy_runtime_path = os.path.join(
+            workspace_root, '.runtime', 'scenario_runner', 'path.csv'
+        )
+        if (
+            not os.path.exists(default_runtime_path)
+            and os.path.exists(legacy_runtime_path)
+        ):
+            default_runtime_path = legacy_runtime_path
         path_csv = os.environ.get(
             'GT_BEV_PATH_CSV',
             default_runtime_path,
@@ -45,10 +56,7 @@ class Config(object):
                 for row in csv.DictReader(f)
             ]
 
-        gt_bev_root = os.path.normpath(os.path.join(
-            os.path.dirname(__file__),
-            '../../../../',
-        ))
+        gt_bev_root = workspace_root
         bundled_map_data_dir = os.path.join(
             gt_bev_root,
             'map_data/R_KR_PG_KATRI_2025',

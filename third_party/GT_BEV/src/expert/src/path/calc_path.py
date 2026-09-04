@@ -16,7 +16,14 @@ class mgeo_dijkstra_path :
         current_path = os.path.dirname(os.path.realpath(__file__))
         sys.path.append(current_path)
 
-        load_path = os.path.normpath(os.path.join(current_path, '../../../../'+map_name))
+        workspace_root = os.path.normpath(
+            os.path.join(current_path, '../../../../')
+        )
+        load_path = os.path.join(workspace_root, 'map_data', map_name)
+        if not os.path.isdir(load_path):
+            load_path = os.path.join(
+                workspace_root, 'map_data', 'R_KR_PG_KATRI_2025'
+            )
         mgeo_planner_map = MGeo.create_instance_from_json(load_path)
 
         node_set = mgeo_planner_map.node_set

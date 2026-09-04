@@ -18,7 +18,7 @@ class ForwardObjectDetector(object):
     def dynamic_object_list(self, dynamic_object_list):
         self._dynamic_object_list = dynamic_object_list
 
-    def detect_object(self, vehicle_state):
+    def detect_object(self, vehicle_state, forward_only=True):
         tmp_translation = vehicle_state.position
         tmp_t = np.array([[np.cos(vehicle_state.yaw), -np.sin(vehicle_state.yaw), tmp_translation.x],
                           [np.sin(vehicle_state.yaw), np.cos(vehicle_state.yaw), tmp_translation.y],
@@ -32,7 +32,7 @@ class ForwardObjectDetector(object):
             global_position_vector = np.array([[object_info.position.x], [object_info.position.y], [1]])
             local_position_vector = tmp_det_t.dot(global_position_vector)
             local_position = Point(local_position_vector[0][0], local_position_vector[1][0])
-            if local_position.x > 0:
+            if not forward_only or local_position.x > 0:
                 object_info_dic_list.append({"object_info": object_info, "local_position": local_position})
 
         return object_info_dic_list

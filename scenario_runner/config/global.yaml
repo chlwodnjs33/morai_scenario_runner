@@ -1,12 +1,10 @@
 grpc:
-  # WSL2의 Windows 호스트 주소는 WSL 재시작 시 바뀔 수 있으므로 자동 탐색한다.
-  host: auto
+  host: 172.19.0.1
   port: 7789
   client_key: scenario_runner
 morai:
-  # 아래 mgeo_root와 동일한 MORAI 맵을 사용해야 링크/차선 좌표가 일치한다.
-  map_name: R_KR_PG_KATRI
+  map_name: R_KR_PR_K-city_2025
   ego_vehicle_model: 2023_Hyundai_Ioniq5
 paths:
   grpc_src: third_party/grpc_inha_univ/src
-  mgeo_root: third_party/GT_BEV/R_KR_PG_KATRI
+  mgeo_root: third_party/GT_BEV/R_KR_PR_K-city_2025
